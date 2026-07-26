@@ -131,6 +131,16 @@ describe("Worker API", () => {
     expect(page.nextCursor).toBeNull();
   });
 
+  it("rejects report ranges longer than seven days", async () => {
+    const cookie = await login();
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/report?from=2026-07-01T00%3A00%3A00.000Z&to=2026-07-09T00%3A00%3A00.000Z`,
+      { headers: { cookie } },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "range_too_large" });
+  });
+
   it("rejects malformed records without discarding valid records in the batch", async () => {
     const response = await ingest([
       sample("mixed-valid", "2026-07-26T05:00:00Z"),

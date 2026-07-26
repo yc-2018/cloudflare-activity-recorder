@@ -1,6 +1,8 @@
 import { HttpError } from "./http";
 import type { ActivityEventPayload, QueryFilters } from "./types";
 
+const MAX_REPORT_RANGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 function object(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -74,6 +76,9 @@ export function parseFilters(url: URL): QueryFilters {
   const to = Date.parse(url.searchParams.get("to") ?? "");
   if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
     throw new HttpError(400, "invalid_range", "from and to must be a valid ascending ISO date range");
+  }
+  if (to - from > MAX_REPORT_RANGE_MS) {
+    throw new HttpError(400, "range_too_large", "A report can cover at most 7 days");
   }
   const deviceId = text(url.searchParams.get("device"), 64) ?? undefined;
   const app = text(url.searchParams.get("app"), 128) ?? undefined;

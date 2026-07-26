@@ -35,9 +35,10 @@ function initialFilters() {
   const today = localDateString();
   const from = validDate(params.get("from")) ? params.get("from")! : today;
   const candidateTo = validDate(params.get("to")) ? params.get("to")! : from;
+  const maximumTo = addDays(from, 6);
   return {
     from,
-    to: candidateTo >= from ? candidateTo : from,
+    to: candidateTo >= from ? (candidateTo > maximumTo ? maximumTo : candidateTo) : from,
     device: params.get("device") ?? "",
     app: params.get("app") ?? "",
     query: params.get("q") ?? "",
@@ -172,12 +173,16 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
           <div className="date-controls">
             <button className="icon-button previous-period" onClick={() => shift(-1)} title="上一时段" aria-label="上一时段"><ChevronLeft size={18} /></button>
             <label><span>开始日期</span><input type="date" value={from} onChange={(event) => {
-              const value = event.target.value; setFrom(value); if (value > to) setTo(value);
+              const value = event.target.value;
+              setFrom(value);
+              if (value > to) setTo(value);
+              else if (rangeDays(value, to) > 7) setTo(addDays(value, 6));
             }} /></label>
             <span className="date-separator">至</span>
-            <label><span>结束日期</span><input type="date" min={from} value={to} onChange={(event) => setTo(event.target.value)} /></label>
+            <label><span>结束日期</span><input type="date" min={from} max={addDays(from, 6)} value={to} onChange={(event) => setTo(event.target.value)} /></label>
             <button className="icon-button next-period" onClick={() => shift(1)} title="下一时段" aria-label="下一时段"><ChevronRight size={18} /></button>
             <button className="text-button" onClick={setToday}>今天</button>
+            <span className="range-limit">最多 7 天</span>
           </div>
           <div className="filter-controls">
             <label><span>设备</span><select value={device} onChange={(event) => setDevice(event.target.value)}>

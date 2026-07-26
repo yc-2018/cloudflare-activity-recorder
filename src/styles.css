@@ -62,6 +62,7 @@ input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rg
 input[type="date"] { width: 145px; }
 select { min-width: 150px; max-width: 220px; }
 .date-separator { color: var(--muted); padding-top: 17px; font-size: 13px; }
+.range-limit { color: var(--muted); padding-top: 17px; font-size: 11px; white-space: nowrap; }
 .search-control > div { display: flex; height: 38px; border: 1px solid #cdd5da; border-radius: 5px; background: #fff; align-items: center; padding-left: 10px; }
 .search-control > div:focus-within { border-color: var(--green); box-shadow: 0 0 0 2px rgba(38, 115, 106, .12); }
 .search-control input { width: 170px; border: 0; box-shadow: none; height: 34px; }
@@ -166,7 +167,8 @@ tbody tr:hover { background: #fafbfb; }
   .date-controls .next-period { grid-column: 3; grid-row: 1; align-self: end; }
   .date-controls input { width: 100%; min-width: 0; padding: 0 6px; }
   .date-separator { display: none; }
-  .date-controls .text-button { grid-column: 1 / -1; grid-row: 3; }
+  .date-controls .text-button { grid-column: 1 / 2; grid-row: 3; justify-self: start; padding: 0; white-space: nowrap; }
+  .date-controls .range-limit { grid-column: 2 / 4; grid-row: 3; justify-self: end; padding-top: 11px; }
   .filter-controls { display: grid; grid-template-columns: 1fr 1fr; }
   .filter-controls label, .filter-controls select { width: 100%; min-width: 0; }
   .search-control { grid-column: 1 / -1; }
