@@ -1,0 +1,4 @@
+INGEST_TOKEN=replace-with-a-long-random-token
+# Leave DASHBOARD_PASSWORD unset to make the dashboard public.
+DASHBOARD_PASSWORD=replace-with-a-dashboard-password
+SESSION_SECRET=replace-with-another-long-random-secret

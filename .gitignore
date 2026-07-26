@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.wrangler/
+coverage/
+playwright-report/
+test-results/
+.env
+.dev.vars
+*.log
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+.pytest_cache/
+client/.venv/
+client/build/
+client/dist/

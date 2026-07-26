@@ -1,0 +1,30 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "activity-recorder",
+	"main": "worker/index.ts",
+	"compatibility_date": "2025-04-01",
+	"workers_dev": true,
+	"preview_urls": false,
+	"routes": [
+		{
+			"pattern": "bg.245556.xyz",
+			"custom_domain": true
+		}
+	],
+	"assets": {
+		"directory": "./dist",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/api/*"
+		]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "activity-recorder",
+			"database_id": "944b22ac-71a9-4f09-a619-b81d633d4c31",
+			"migrations_dir": "migrations"
+		}
+	]
+}

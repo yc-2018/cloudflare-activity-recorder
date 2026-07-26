@@ -1,0 +1,8 @@
+{
+  "endpoint": "https://activity-recorder.example.workers.dev",
+  "ingest_token": "replace-with-the-same-INGEST_TOKEN-used-by-the-worker",
+  "device_id": "generated-by-install.ps1",
+  "device_name": "optional-friendly-device-name",
+  "poll_seconds": 1,
+  "heartbeat_seconds": 300
+}

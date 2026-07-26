@@ -1,0 +1,43 @@
+{
+  "name": "cloudflare-activity-recorder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && wrangler dev",
+    "dev:web": "vite",
+    "build": "tsc -b && vite build",
+    "deploy": "npm run build && wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply activity-recorder --local",
+    "db:migrate:remote": "wrangler d1 migrations apply activity-recorder --remote",
+    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.frontend.config.ts",
+    "test:worker": "vitest run --config vitest.config.ts",
+    "test:frontend": "vitest run --config vitest.frontend.config.ts",
+    "test:watch": "vitest --config vitest.frontend.config.ts",
+    "test:client": "python -m unittest discover -s client/tests -v",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "chart.js": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-chartjs-2": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/workers-types": "latest",
+    "@playwright/test": "^1.62.0",
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "jsdom": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vitest": "latest",
+    "wrangler": "latest"
+  }
+}
