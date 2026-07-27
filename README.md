@@ -17,7 +17,7 @@
 
 - Cloudflare 账户。
 - Node.js 20 或更高版本。
-- Windows 10/11 和 Python 3.11（`py -3.11` 可用）。
+- Windows 10/11 和 Python 3.11 或更高版本（`py -3` 或 `python` 可用）。
 
 ## 部署 Cloudflare
 
