@@ -92,18 +92,18 @@ select { min-width: 150px; max-width: 220px; }
 .app-chart { height: 330px; }
 .empty-chart { min-height: 180px; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
 
-.app-activity-scroll { overflow-x: auto; padding: 17px 18px 20px; }
+.app-activity-scroll { overflow: auto; max-height: 520px; padding: 17px 18px 20px; }
 .app-activity-timeline { min-width: 760px; padding-top: 8px; }
-.app-activity-axis { position: relative; margin-left: 150px; height: 30px; border-bottom: 1px solid #dce2e6; }
+.app-activity-axis { position: sticky; top: -17px; z-index: 4; margin-left: 150px; height: 27px; border-bottom: 1px solid #dce2e6; background: #fff; }
 .app-activity-axis span { position: absolute; bottom: 7px; transform: translateX(-50%); color: var(--muted); font-size: 10px; white-space: nowrap; }
 .app-activity-axis span:first-child { transform: none; }
 .app-activity-axis span:last-child { transform: translateX(-100%); }
-.app-activity-row { display: grid; grid-template-columns: 140px 1fr; gap: 10px; align-items: center; min-height: 43px; }
-.app-activity-label { width: 100%; padding: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; color: #44515a; background: transparent; border: 0; font-size: 12px; font-weight: 700; }
-.app-activity-label:hover { color: var(--green); }
-.app-activity-track { position: relative; height: 25px; overflow: hidden; background-color: #f3f5f6; background-image: linear-gradient(to right, transparent calc(25% - 1px), #dfe4e7 25%, transparent calc(25% + 1px)); background-size: 25% 100%; }
-.app-activity-segment { position: absolute; top: 3px; min-width: 3px; height: 19px; padding: 0; border: 0; border-radius: 2px; }
-.app-activity-segment:hover { outline: 2px solid #17232b; outline-offset: 1px; }
+.app-activity-body { position: relative; cursor: crosshair; }
+.app-activity-row { display: grid; grid-template-columns: 140px 1fr; gap: 10px; align-items: center; min-height: 29px; }
+.app-activity-label { width: 100%; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; color: #44515a; font-size: 11px; font-weight: 700; }
+.app-activity-track { position: relative; height: 17px; overflow: hidden; background-color: #f3f5f6; background-image: linear-gradient(to right, transparent calc(25% - 1px), #dfe4e7 25%, transparent calc(25% + 1px)); background-size: 25% 100%; }
+.app-activity-segment { position: absolute; top: 3px; min-width: 2px; height: 11px; border-radius: 2px; }
+.app-activity-crosshair { position: absolute; z-index: 3; top: 0; bottom: 0; width: 1px; background: #17232b; box-shadow: 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }
 
 .timeline-scroll { overflow-x: auto; padding: 17px 18px 20px; }
 .timeline { padding-top: 31px; }
@@ -115,6 +115,23 @@ select { min-width: 150px; max-width: 220px; }
 .timeline-device { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #44515a; font-size: 12px; font-weight: 700; }
 .timeline-track { position: relative; height: 25px; background-color: #f3f5f6; background-image: linear-gradient(to right, transparent calc(25% - 1px), #dfe4e7 25%, transparent calc(25% + 1px)); background-size: 25% 100%; }
 .timeline-segment { position: absolute; top: 3px; height: 19px; overflow: hidden; color: #fff; font-size: 9px; line-height: 19px; padding-left: 4px; white-space: nowrap; border-right: 1px solid rgba(255,255,255,.35); }
+.timeline-segment:hover, .timeline-segment:focus-visible { z-index: 2; outline: 2px solid #17232b; outline-offset: 1px; }
+
+.hover-tooltip { position: fixed; z-index: 1000; width: max-content; max-width: min(320px, calc(100vw - 16px)); padding: 10px 11px; color: #f7f9fa; background: #17232b; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; box-shadow: 0 9px 28px rgba(13, 25, 32, .24); font-size: 11px; line-height: 1.4; pointer-events: none; overflow-wrap: anywhere; }
+.hover-tooltip-title { display: block; margin-bottom: 3px; font-size: 12px; }
+.hover-tooltip-description { max-width: 290px; margin-bottom: 8px; color: #dce5e8; }
+.hover-tooltip-facts { display: grid; gap: 3px; margin: 0; }
+.hover-tooltip-facts > div { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 8px; }
+.hover-tooltip-facts dt { color: #9fb0b8; }
+.hover-tooltip-facts dd { margin: 0; }
+.hover-tooltip-time { display: block; padding-bottom: 7px; color: #fff; font-size: 12px; font-weight: 750; border-bottom: 1px solid rgba(255,255,255,.14); }
+.hover-tooltip-activities { display: grid; }
+.hover-tooltip-activity { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.1); }
+.hover-tooltip-activity:last-child { border-bottom: 0; padding-bottom: 0; }
+.hover-tooltip-activity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hover-tooltip-activity span { color: #aebdc3; white-space: nowrap; }
+.hover-tooltip-activity small { grid-column: 1 / -1; margin-top: 2px; overflow: hidden; color: #dce5e8; text-overflow: ellipsis; white-space: nowrap; }
+.hover-tooltip-empty, .hover-tooltip-more { padding-top: 7px; color: #bdc9ce; }
 
 .table-scroll { overflow-x: auto; }
 table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 12px; }

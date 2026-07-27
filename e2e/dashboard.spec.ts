@@ -58,6 +58,14 @@ for (const viewport of [
     await expect(page.getByRole("heading", { name: "采样明细" })).toBeVisible();
     await expect(page.locator("canvas")).toHaveCount(2);
     await expect(page.locator(".app-activity-segment")).toHaveCount(3);
+    await expect(page.locator(".app-activity-body button")).toHaveCount(0);
+
+    await page.locator(".timeline-segment").first().hover();
+    await expect(page.getByRole("tooltip")).toContainText("Activity Recorder");
+
+    await page.locator(".app-activity-segment").first().hover();
+    await expect(page.locator(".app-activity-crosshair")).toBeVisible();
+    await expect(page.getByRole("tooltip")).toContainText("code.exe");
     await page.waitForTimeout(300);
 
     const hasPaintedCanvas = await page.locator("canvas").first().evaluate((canvas: HTMLCanvasElement) => {

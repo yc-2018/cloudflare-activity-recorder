@@ -225,12 +225,11 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
             </section>
 
             <section className="panel full-panel">
-              <div className="panel-heading"><div><h2>应用活动分布</h2><p>每行一个应用，色块表示连续使用区间</p></div></div>
+              <div className="panel-heading"><div><h2>应用活动分布</h2><p>每行一个应用，移动鼠标查看对应时间点</p></div></div>
               <AppActivityTimeline
                 timeline={report.timeline}
                 from={Date.parse(range.fromIso)}
                 to={Date.parse(range.toIso)}
-                onSelectApp={setApp}
               />
             </section>
 
