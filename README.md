@@ -94,6 +94,35 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\client\status.ps1
 ```
 
+### 调整采集频率
+
+客户端配置保存在 `%LOCALAPPDATA%\ActivityRecorder\config.json`。其中：
+
+- `poll_seconds` 控制检查前台窗口的间隔，默认 `1` 秒。例如设为 `3` 后，窗口变化通常会在 3 秒内被记录。
+- `heartbeat_seconds` 控制前台窗口没有变化时的定期记录间隔，默认 `300` 秒（5 分钟）。
+
+使用记事本打开配置文件，并修改现有字段；不要删除其中的 Endpoint、令牌或设备 ID：
+
+```powershell
+notepad "$env:LOCALAPPDATA\ActivityRecorder\config.json"
+```
+
+例如每 3 秒检查一次窗口，并保留 5 分钟心跳：
+
+```json
+"poll_seconds": 3,
+"heartbeat_seconds": 300
+```
+
+保存后重启计划任务使配置生效：
+
+```powershell
+Stop-ScheduledTask -TaskName "ActivityRecorder"
+Start-ScheduledTask -TaskName "ActivityRecorder"
+```
+
+也可以按 `Win + R`，运行 `taskschd.msc`，在“任务计划程序库”中找到 `ActivityRecorder`，依次右键选择“结束”和“运行”。建议将 `poll_seconds` 保持在 `0.5` 秒以上；重新执行 `install.ps1` 会将它恢复为默认的 `1` 秒。
+
 临时暂停采集（默认 5 分钟）：
 
 ```powershell
