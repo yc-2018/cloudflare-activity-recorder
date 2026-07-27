@@ -59,6 +59,16 @@ for (const viewport of [
     await expect(page.locator("canvas")).toHaveCount(2);
     await expect(page.locator(".app-activity-segment")).toHaveCount(3);
     await expect(page.locator(".app-activity-body button")).toHaveCount(0);
+    const rangeStart = page.getByRole("slider", { name: "应用活动显示开始时间" });
+    const rangeReset = page.getByRole("button", { name: "恢复完整时间范围" });
+    await expect(rangeStart).toBeVisible();
+    await expect(page.getByRole("slider", { name: "应用活动显示结束时间" })).toBeVisible();
+    await expect(rangeReset).toBeDisabled();
+    await rangeStart.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(rangeReset).toBeEnabled();
+    await rangeReset.click();
+    await expect(rangeReset).toBeDisabled();
 
     await page.locator(".timeline-segment").first().hover();
     await expect(page.getByRole("tooltip")).toContainText("Activity Recorder");

@@ -104,6 +104,25 @@ select { min-width: 150px; max-width: 220px; }
 .app-activity-track { position: relative; height: 17px; overflow: hidden; background-color: #f3f5f6; background-image: linear-gradient(to right, transparent calc(25% - 1px), #dfe4e7 25%, transparent calc(25% + 1px)); background-size: 25% 100%; }
 .app-activity-segment { position: absolute; top: 3px; min-width: 2px; height: 11px; border-radius: 2px; }
 .app-activity-crosshair { position: absolute; z-index: 3; top: 0; bottom: 0; width: 1px; background: #17232b; box-shadow: 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }
+.app-activity-empty { min-height: 140px; }
+.app-activity-range-filter { padding: 12px 18px 16px; border-top: 1px solid #e7ebee; background: #fafbfb; }
+.app-activity-range-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 7px; }
+.app-activity-range-heading > div { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.app-activity-range-heading span { color: var(--muted); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.app-activity-range-heading strong { overflow: hidden; color: #34434c; font-size: 11px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.app-activity-range-reset { width: 28px; min-height: 28px; height: 28px; flex: 0 0 auto; }
+.app-activity-range-reset:disabled { cursor: default; opacity: .35; }
+.app-activity-range-slider { position: relative; height: 24px; }
+.app-activity-range-rail, .app-activity-range-selection { position: absolute; top: 10px; height: 4px; border-radius: 2px; pointer-events: none; }
+.app-activity-range-rail { left: 0; right: 0; background: #d8dfe3; }
+.app-activity-range-selection { z-index: 1; background: var(--green); }
+.app-activity-range-input { position: absolute; z-index: 2; inset: 0; width: 100%; height: 24px; margin: 0; padding: 0; border: 0; outline: 0; background: transparent; box-shadow: none; appearance: none; pointer-events: none; }
+.app-activity-range-input:focus { box-shadow: none; }
+.app-activity-range-input::-webkit-slider-runnable-track { height: 4px; background: transparent; }
+.app-activity-range-input::-webkit-slider-thumb { width: 15px; height: 15px; margin-top: -5.5px; border: 2px solid #fff; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 1px #175e56, 0 2px 5px rgba(23,35,43,.2); appearance: none; cursor: ew-resize; pointer-events: auto; }
+.app-activity-range-input::-moz-range-track { height: 4px; background: transparent; }
+.app-activity-range-input::-moz-range-thumb { width: 11px; height: 11px; border: 2px solid #fff; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 1px #175e56, 0 2px 5px rgba(23,35,43,.2); cursor: ew-resize; pointer-events: auto; }
+.app-activity-range-slider:focus-within .app-activity-range-selection { box-shadow: 0 0 0 3px rgba(38,115,106,.14); }
 
 .timeline-scroll { overflow-x: auto; padding: 17px 18px 20px; }
 .timeline { padding-top: 31px; }
@@ -198,6 +217,8 @@ tbody tr:hover { background: #fafbfb; }
   .app-activity-axis span:nth-child(4) { display: none; }
   .app-activity-row { grid-template-columns: 100px minmax(0, 1fr); }
   .app-activity-label { font-size: 10px; }
+  .app-activity-range-filter { padding: 11px 12px 14px; }
+  .app-activity-range-heading > div { display: grid; gap: 1px; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-card { padding: 12px; }
   .summary-card strong { font-size: 16px; }

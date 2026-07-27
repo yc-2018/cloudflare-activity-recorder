@@ -78,4 +78,33 @@ describe("activity timeline tooltips", () => {
     fireEvent.pointerLeave(body);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
+
+  it("filters the app distribution by a local time range and resets it", () => {
+    const minute = 60_000;
+    const { container } = render(
+      <AppActivityTimeline
+        timeline={[
+          segment("code.exe", 2 * minute, 10 * minute, "Project"),
+          segment("chrome.exe", 40 * minute, 50 * minute, "Cloudflare"),
+        ]}
+        from={0}
+        to={60 * minute}
+      />,
+    );
+
+    expect(container.querySelectorAll(".app-activity-row")).toHaveLength(2);
+    fireEvent.change(within(container).getByRole("slider", { name: "应用活动显示开始时间" }), {
+      target: { value: 30 * minute },
+    });
+    expect(container.querySelectorAll(".app-activity-row")).toHaveLength(1);
+    expect(container.querySelector(".app-activity-label")).toHaveTextContent("chrome.exe");
+
+    fireEvent.change(within(container).getByRole("slider", { name: "应用活动显示结束时间" }), {
+      target: { value: 35 * minute },
+    });
+    expect(screen.getByText("所选时间范围没有应用活动")).toBeInTheDocument();
+
+    fireEvent.click(within(container).getByRole("button", { name: "恢复完整时间范围" }));
+    expect(container.querySelectorAll(".app-activity-row")).toHaveLength(2);
+  });
 });
