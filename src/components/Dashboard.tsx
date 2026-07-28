@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Cpu,
+  LockKeyhole,
   LogOut,
   Monitor,
   RefreshCw,
@@ -18,10 +19,13 @@ import { addDays, formatDuration, inclusiveRange, localDateString, rangeDays } f
 import type { EventPage, FilterOptions, Report } from "../types";
 import { AppDurationChart, MetricsChart } from "./Charts";
 import { AppActivityTimeline } from "./AppActivityTimeline";
+import { DetailsLogin } from "./DetailsLogin";
 import { Timeline } from "./Timeline";
 
 interface DashboardProps {
   authEnabled: boolean;
+  detailsAuthEnabled: boolean;
+  detailsAuthenticated: boolean;
   onLogout: () => void;
   onUnauthorized: () => void;
 }
@@ -49,7 +53,13 @@ function metric(value: number | null, suffix = "%") {
   return value === null ? "--" : `${value}${suffix}`;
 }
 
-export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardProps) {
+export function Dashboard({
+  authEnabled,
+  detailsAuthEnabled,
+  detailsAuthenticated,
+  onLogout,
+  onUnauthorized,
+}: DashboardProps) {
   const initial = useMemo(initialFilters, []);
   const [from, setFrom] = useState(initial.from);
   const [to, setTo] = useState(initial.to);
@@ -61,8 +71,10 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
   const [report, setReport] = useState<Report | null>(null);
   const [events, setEvents] = useState<EventPage>({ items: [], nextCursor: null });
   const [loading, setLoading] = useState(true);
+  const [eventsLoading, setEventsLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [detailsError, setDetailsError] = useState("");
   const range = useMemo(() => inclusiveRange(from, to), [from, to]);
 
   const params = useMemo(() => {
@@ -93,14 +105,8 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    Promise.all([
-      api<Report>(`/api/v1/report?${params}`, { signal: controller.signal }),
-      api<EventPage>(`/api/v1/events?${params}&limit=50`, { signal: controller.signal }),
-    ])
-      .then(([nextReport, eventPage]) => {
-        setReport(nextReport);
-        setEvents(eventPage);
-      })
+    api<Report>(`/api/v1/report?${params}`, { signal: controller.signal })
+      .then(setReport)
       .catch((requestError) => {
         if (requestError instanceof DOMException && requestError.name === "AbortError") return;
         if (requestError instanceof ApiError && requestError.status === 401) {
@@ -112,6 +118,30 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
       .finally(() => setLoading(false));
     return () => controller.abort();
   }, [app, device, from, onUnauthorized, params, query, to]);
+
+  useEffect(() => {
+    if (detailsAuthEnabled && !detailsAuthenticated) {
+      setEvents({ items: [], nextCursor: null });
+      setEventsLoading(false);
+      setDetailsError("");
+      return;
+    }
+    const controller = new AbortController();
+    setEventsLoading(true);
+    setDetailsError("");
+    api<EventPage>(`/api/v1/events?${params}&limit=50`, { signal: controller.signal })
+      .then(setEvents)
+      .catch((requestError) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+        if (requestError instanceof ApiError && requestError.status === 401) {
+          onUnauthorized();
+          return;
+        }
+        setDetailsError(requestError instanceof Error ? requestError.message : "采样明细加载失败");
+      })
+      .finally(() => setEventsLoading(false));
+    return () => controller.abort();
+  }, [detailsAuthEnabled, detailsAuthenticated, onUnauthorized, params]);
 
   function shift(direction: number) {
     const days = rangeDays(from, to);
@@ -137,7 +167,8 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
       const page = await api<EventPage>(`/api/v1/events?${params}&limit=50&cursor=${encodeURIComponent(events.nextCursor)}`);
       setEvents((current) => ({ items: [...current.items, ...page.items], nextCursor: page.nextCursor }));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "加载更多失败");
+      if (requestError instanceof ApiError && requestError.status === 401) onUnauthorized();
+      else setDetailsError(requestError instanceof Error ? requestError.message : "加载更多失败");
     } finally {
       setLoadingMore(false);
     }
@@ -146,6 +177,11 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
   async function logout() {
     await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     onLogout();
+  }
+
+  async function lockDetails() {
+    await api("/api/auth/details/logout", { method: "POST" }).catch(() => undefined);
+    onUnauthorized();
   }
 
   return (
@@ -234,8 +270,19 @@ export function Dashboard({ authEnabled, onLogout, onUnauthorized }: DashboardPr
             </section>
 
             <section className="panel full-panel table-panel">
-              <div className="panel-heading"><div><h2>采样明细</h2><p>共显示 {events.items.length} 条</p></div></div>
-              {events.items.length ? (
+              <div className="panel-heading">
+                <div><h2>采样明细</h2><p>{detailsAuthEnabled && !detailsAuthenticated ? "需要单独验证" : `共显示 ${events.items.length} 条`}</p></div>
+                {detailsAuthEnabled && detailsAuthenticated && (
+                  <button className="icon-button" onClick={lockDetails} title="锁定采样明细" aria-label="锁定采样明细"><LockKeyhole size={17} /></button>
+                )}
+              </div>
+              {detailsAuthEnabled && !detailsAuthenticated ? (
+                <DetailsLogin onSuccess={onUnauthorized} />
+              ) : eventsLoading ? (
+                <div className="details-loading"><RefreshCw className="spin" size={17} />正在读取采样明细...</div>
+              ) : detailsError ? (
+                <div className="details-error" role="alert">{detailsError}</div>
+              ) : events.items.length ? (
                 <div className="table-scroll"><table><thead><tr><th>时间</th><th>设备</th><th>应用</th><th>窗口标题</th><th>CPU</th><th>内存</th><th>电量</th><th>原因</th></tr></thead>
                   <tbody>{events.items.map((item) => <tr key={item.id}>
                     <td className="nowrap">{new Date(item.observedAt).toLocaleString()}</td><td>{item.deviceName}</td><td><span className="app-label">{item.processName}</span></td>

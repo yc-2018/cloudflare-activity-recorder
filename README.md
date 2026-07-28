@@ -9,7 +9,7 @@
 - SQLite 离线队列、幂等事件 ID、最多 100 条批量补传和指数退避。
 - D1 永久存储，多设备自动区分。
 - 日期范围、设备、应用和标题筛选，包含时间线、应用排行、系统折线及分页明细。
-- 写入令牌与仪表盘密码分离；未设置仪表盘密码时页面公开。
+- 写入令牌、仪表盘密码和采样明细密码相互独立；两个查看密码都可选。
 ![Activity Recorder dashboard overview](docs/images/dashboard-overview.webp)
 ![Activity Recorder dashboard details](docs/images/dashboard-detail.webp)
 
@@ -55,10 +55,26 @@ npx wrangler secret put SESSION_SECRET
 npx wrangler secret put DASHBOARD_PASSWORD
 ```
 
-不设置 `DASHBOARD_PASSWORD` 时，任何知道 Worker 地址的人都可以查看记录。若之前设置过并希望改为公开：
+如需给“采样明细”表格单独增加第二层密码，再设置：
+
+```powershell
+npx wrangler secret put DETAILS_PASSWORD
+```
+
+两个密码互不替代，具体行为如下：
+
+| `DASHBOARD_PASSWORD` | `DETAILS_PASSWORD` | 访问行为 |
+| --- | --- | --- |
+| 未设置 | 未设置 | 整个页面公开 |
+| 已设置 | 未设置 | 输入主密码后可查看整个页面和采样明细 |
+| 未设置 | 已设置 | 图表公开，采样明细需要单独输入密码 |
+| 已设置 | 已设置 | 先输入主密码进入页面，再输入明细密码查看采样明细 |
+
+只要设置了任意一个查看密码，就必须同时配置 `SESSION_SECRET`。若之前设置过密码并希望取消对应限制：
 
 ```powershell
 npx wrangler secret delete DASHBOARD_PASSWORD
+npx wrangler secret delete DETAILS_PASSWORD
 ```
 
 ### 4. 部署
@@ -225,5 +241,5 @@ Worker 测试运行在 Cloudflare Workers 本地运行时并绑定隔离的 D1�
 
 - 客户端没有记录：运行 `client\status.ps1`，检查计划任务状态和 `recorder.log`。
 - 队列持续增长：确认 Endpoint 使用 HTTPS、令牌与 `INGEST_TOKEN` 一致，并检查 Worker 日志。
-- 页面显示未配置：设置了 `DASHBOARD_PASSWORD` 时也必须设置 `SESSION_SECRET`。
+- 页面显示未配置：设置了 `DASHBOARD_PASSWORD` 或 `DETAILS_PASSWORD` 时也必须设置 `SESSION_SECRET`。
 - 修改数据库结构：新增迁移文件后先运行本地迁移和测试，再执行 `npm run db:migrate:remote`。

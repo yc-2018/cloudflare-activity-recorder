@@ -35,6 +35,20 @@ async function login(): Promise<string> {
   return response.headers.get("set-cookie")!.split(";")[0];
 }
 
+async function detailsLogin(): Promise<string> {
+  const response = await SELF.fetch(`${BASE}/api/auth/details/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: "test-details-password" }),
+  });
+  expect(response.status).toBe(200);
+  return response.headers.get("set-cookie")!.split(";")[0];
+}
+
+async function eventReadCookies(): Promise<string> {
+  return `${await login()}; ${await detailsLogin()}`;
+}
+
 async function ingest(events: unknown[], token = "test-ingest-token-123456789") {
   return SELF.fetch(`${BASE}/api/v1/events`, {
     method: "POST",
@@ -51,7 +65,13 @@ describe("Worker API", () => {
 
   it("requires the dashboard password and issues a signed session", async () => {
     const status = await SELF.fetch(`${BASE}/api/auth/status`).then((response) => response.json<Record<string, boolean>>());
-    expect(status).toMatchObject({ enabled: true, configured: true, authenticated: false });
+    expect(status).toMatchObject({
+      enabled: true,
+      configured: true,
+      authenticated: false,
+      detailsEnabled: true,
+      detailsAuthenticated: false,
+    });
 
     const denied = await SELF.fetch(`${BASE}/api/auth/login`, {
       method: "POST",
@@ -62,6 +82,30 @@ describe("Worker API", () => {
 
     const cookie = await login();
     const allowed = await SELF.fetch(`${BASE}/api/v1/filters`, { headers: { cookie } });
+    expect(allowed.status).toBe(200);
+  });
+
+  it("requires an independent details password when both passwords are configured", async () => {
+    const dashboardCookie = await login();
+    const query = "from=2026-07-26T00%3A00%3A00.000Z&to=2026-07-27T00%3A00%3A00.000Z";
+    const denied = await SELF.fetch(`${BASE}/api/v1/events?${query}`, { headers: { cookie: dashboardCookie } });
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toMatchObject({ error: "details_auth_required" });
+
+    const wrongPassword = await SELF.fetch(`${BASE}/api/auth/details/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: "wrong" }),
+    });
+    expect(wrongPassword.status).toBe(401);
+
+    const detailsCookie = await detailsLogin();
+    const missingDashboard = await SELF.fetch(`${BASE}/api/v1/events?${query}`, { headers: { cookie: detailsCookie } });
+    expect(missingDashboard.status).toBe(401);
+
+    const allowed = await SELF.fetch(`${BASE}/api/v1/events?${query}`, {
+      headers: { cookie: `${dashboardCookie}; ${detailsCookie}` },
+    });
     expect(allowed.status).toBe(200);
   });
 
@@ -76,6 +120,58 @@ describe("Worker API", () => {
     expect(await statusResponse.json()).toMatchObject({ enabled: false, configured: true, authenticated: true });
     const filtersResponse = await worker.fetch(new Request(`${BASE}/api/v1/filters`), publicEnv);
     expect(filtersResponse.status).toBe(200);
+  });
+
+  it("allows event details with only the dashboard password configured", async () => {
+    const mainOnlyEnv: Env = {
+      DB: env.DB,
+      ASSETS: env.ASSETS,
+      INGEST_TOKEN: env.INGEST_TOKEN,
+      DASHBOARD_PASSWORD: env.DASHBOARD_PASSWORD,
+      SESSION_SECRET: env.SESSION_SECRET,
+    };
+    const loginResponse = await worker.fetch(new Request(`${BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: env.DASHBOARD_PASSWORD }),
+    }), mainOnlyEnv);
+    const cookie = loginResponse.headers.get("set-cookie")!.split(";")[0];
+    const response = await worker.fetch(new Request(
+      `${BASE}/api/v1/events?from=2026-07-26T00%3A00%3A00.000Z&to=2026-07-27T00%3A00%3A00.000Z`,
+      { headers: { cookie } },
+    ), mainOnlyEnv);
+    expect(response.status).toBe(200);
+  });
+
+  it("keeps reports public when only the details password is configured", async () => {
+    const detailsOnlyEnv: Env = {
+      DB: env.DB,
+      ASSETS: env.ASSETS,
+      INGEST_TOKEN: env.INGEST_TOKEN,
+      DETAILS_PASSWORD: env.DETAILS_PASSWORD,
+      SESSION_SECRET: env.SESSION_SECRET,
+    };
+    const query = "from=2026-07-26T00%3A00%3A00.000Z&to=2026-07-27T00%3A00%3A00.000Z";
+    const status = await worker.fetch(new Request(`${BASE}/api/auth/status`), detailsOnlyEnv)
+      .then((response) => response.json<Record<string, boolean>>());
+    expect(status).toMatchObject({
+      enabled: false,
+      authenticated: true,
+      detailsEnabled: true,
+      detailsAuthenticated: false,
+    });
+    expect((await worker.fetch(new Request(`${BASE}/api/v1/report?${query}`), detailsOnlyEnv)).status).toBe(200);
+    expect((await worker.fetch(new Request(`${BASE}/api/v1/events?${query}`), detailsOnlyEnv)).status).toBe(401);
+
+    const loginResponse = await worker.fetch(new Request(`${BASE}/api/auth/details/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: env.DETAILS_PASSWORD }),
+    }), detailsOnlyEnv);
+    const cookie = loginResponse.headers.get("set-cookie")!.split(";")[0];
+    expect((await worker.fetch(new Request(`${BASE}/api/v1/events?${query}`, {
+      headers: { cookie },
+    }), detailsOnlyEnv)).status).toBe(200);
   });
 
   it("stores records in D1 and treats retried event IDs as duplicates", async () => {
@@ -95,7 +191,7 @@ describe("Worker API", () => {
       sample(`page-${String(index).padStart(2, "0")}`, new Date(Date.parse("2026-07-26T06:00:00Z") + index * 60_000).toISOString()),
     );
     await ingest(records);
-    const cookie = await login();
+    const cookie = await eventReadCookies();
     const query = "from=2026-07-26T06%3A00%3A00.000Z&to=2026-07-26T07%3A00%3A00.000Z&limit=10";
     const first = await SELF.fetch(`${BASE}/api/v1/events?${query}`, { headers: { cookie } })
       .then((response) => response.json<{ items: unknown[]; nextCursor: string | null }>());
@@ -117,7 +213,7 @@ describe("Worker API", () => {
         activity: { processName: "chrome.exe", windowTitle: "Unrelated page" },
       }),
     ]);
-    const cookie = await login();
+    const cookie = await eventReadCookies();
     const query = "from=2026-07-26T00%3A00%3A00.000Z&to=2026-07-27T00%3A00%3A00.000Z&app=chrome.exe&q=Cloudflare";
     const reportResponse = await SELF.fetch(`${BASE}/api/v1/report?${query}`, { headers: { cookie } });
     expect(reportResponse.status).toBe(200);

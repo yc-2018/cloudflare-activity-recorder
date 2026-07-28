@@ -35,7 +35,10 @@ const events = {
 };
 
 async function mockApi(page: Page) {
-  await page.route("**/api/auth/status", (route) => route.fulfill({ json: { enabled: false, configured: true, authenticated: true } }));
+  await page.route("**/api/auth/status", (route) => route.fulfill({ json: {
+    enabled: false, configured: true, authenticated: true,
+    detailsEnabled: false, detailsAuthenticated: true,
+  } }));
   await page.route("**/api/v1/filters", (route) => route.fulfill({ json: {
     devices: [{ id: "pc-1", name: "工作电脑", manufacturer: "Example", model: "Model A" }],
     apps: ["code.exe", "chrome.exe", "WindowsTerminal.exe"],
@@ -43,6 +46,59 @@ async function mockApi(page: Page) {
   await page.route("**/api/v1/report?*", (route) => route.fulfill({ json: report }));
   await page.route("**/api/v1/events?*", (route) => route.fulfill({ json: events }));
 }
+
+test("details password locks only the event table", async ({ page }) => {
+  let detailsAuthenticated = false;
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await page.route("**/api/auth/status", (route) => route.fulfill({ json: {
+    enabled: false,
+    configured: true,
+    authenticated: true,
+    detailsEnabled: true,
+    detailsAuthenticated,
+  } }));
+  await page.route("**/api/auth/details/login", async (route) => {
+    const body = route.request().postDataJSON() as { password?: string };
+    if (body.password !== "details-secret") {
+      await route.fulfill({ status: 401, json: { message: "采样明细密码不正确" } });
+      return;
+    }
+    detailsAuthenticated = true;
+    await route.fulfill({ json: { authenticated: true } });
+  });
+  await page.route("**/api/auth/details/logout", (route) => {
+    detailsAuthenticated = false;
+    return route.fulfill({ json: { authenticated: false } });
+  });
+  await page.route("**/api/v1/filters", (route) => route.fulfill({ json: {
+    devices: [{ id: "pc-1", name: "工作电脑", manufacturer: "Example", model: "Model A" }],
+    apps: ["code.exe", "chrome.exe", "WindowsTerminal.exe"],
+  } }));
+  await page.route("**/api/v1/report?*", (route) => route.fulfill({ json: report }));
+  await page.route("**/api/v1/events?*", (route) => route.fulfill({ json: events }));
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "活动时间线" })).toBeVisible();
+  await expect(page.getByText("采样明细已保护")).toBeVisible();
+  await expect(page.locator(".table-panel table")).toHaveCount(0);
+  await page.screenshot({ path: "test-results/dashboard-details-locked-desktop.png", fullPage: true });
+
+  await page.getByLabel("采样明细密码").fill("wrong");
+  await page.getByRole("button", { name: "解锁明细" }).click();
+  await expect(page.getByRole("alert")).toContainText("采样明细密码不正确");
+
+  await page.getByLabel("采样明细密码").fill("details-secret");
+  await page.getByRole("button", { name: "解锁明细" }).click();
+  await expect(page.locator(".table-panel table")).toBeVisible();
+
+  await page.getByRole("button", { name: "锁定采样明细" }).click();
+  await expect(page.getByText("采样明细已保护")).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(page.getByLabel("采样明细密码")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: "test-results/dashboard-details-locked-mobile.png", fullPage: true });
+});
 
 for (const viewport of [
   { name: "desktop", width: 1440, height: 1000 },

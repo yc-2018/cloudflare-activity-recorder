@@ -3,6 +3,7 @@ export interface Env {
   ASSETS: Fetcher;
   INGEST_TOKEN?: string;
   DASHBOARD_PASSWORD?: string;
+  DETAILS_PASSWORD?: string;
   SESSION_SECRET?: string;
 }
 

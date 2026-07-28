@@ -22,7 +22,15 @@ export default function App() {
 
   if (error) return <main className="center-state"><AlertTriangle size={28} /><h1>服务暂时不可用</h1><p>{error}</p><button className="secondary-button" onClick={loadStatus}><RefreshCw size={16} />重试</button></main>;
   if (!status) return <main className="center-state"><RefreshCw className="spin" size={24} /><p>正在连接活动记录...</p></main>;
-  if (!status.configured) return <main className="center-state"><AlertTriangle size={28} /><h1>服务尚未配置完成</h1><p>已设置仪表盘密码，但缺少 SESSION_SECRET。</p></main>;
+  if (!status.configured) return <main className="center-state"><AlertTriangle size={28} /><h1>服务尚未配置完成</h1><p>已设置页面密码，但缺少 SESSION_SECRET。</p></main>;
   if (status.enabled && !status.authenticated) return <Login onSuccess={loadStatus} />;
-  return <Dashboard authEnabled={status.enabled} onLogout={loadStatus} onUnauthorized={loadStatus} />;
+  return (
+    <Dashboard
+      authEnabled={status.enabled}
+      detailsAuthEnabled={status.detailsEnabled}
+      detailsAuthenticated={status.detailsAuthenticated}
+      onLogout={loadStatus}
+      onUnauthorized={loadStatus}
+    />
+  );
 }

@@ -2,6 +2,8 @@ export interface AuthStatus {
   enabled: boolean;
   configured: boolean;
   authenticated: boolean;
+  detailsEnabled: boolean;
+  detailsAuthenticated: boolean;
 }
 
 export interface DeviceOption {

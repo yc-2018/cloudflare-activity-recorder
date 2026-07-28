@@ -13,6 +13,7 @@ export default defineConfig({
         bindings: {
           INGEST_TOKEN: "test-ingest-token-123456789",
           DASHBOARD_PASSWORD: "test-dashboard-password",
+          DETAILS_PASSWORD: "test-details-password",
           SESSION_SECRET: "test-session-secret-123456789",
           TEST_MIGRATIONS: migrations,
         },

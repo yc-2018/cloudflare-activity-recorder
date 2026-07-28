@@ -1,6 +1,7 @@
 import type { Env } from "./types";
 
 const COOKIE_NAME = "activity_session";
+const DETAILS_COOKIE_NAME = "activity_details_session";
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 
 async function digest(value: string): Promise<Uint8Array> {
@@ -51,31 +52,61 @@ export function dashboardAuthEnabled(env: Env): boolean {
   return Boolean(env.DASHBOARD_PASSWORD);
 }
 
-export function authConfigured(env: Env): boolean {
-  return !dashboardAuthEnabled(env) || Boolean(env.SESSION_SECRET);
+export function detailsAuthEnabled(env: Env): boolean {
+  return Boolean(env.DETAILS_PASSWORD);
 }
 
-export async function hasDashboardSession(request: Request, env: Env): Promise<boolean> {
-  if (!dashboardAuthEnabled(env)) return true;
+export function authConfigured(env: Env): boolean {
+  return (!dashboardAuthEnabled(env) && !detailsAuthEnabled(env)) || Boolean(env.SESSION_SECRET);
+}
+
+async function hasSession(
+  request: Request,
+  env: Env,
+  cookieName: string,
+  signatureScope: string,
+  enabled: boolean,
+): Promise<boolean> {
+  if (!enabled) return true;
   if (!env.SESSION_SECRET) return false;
-  const value = cookies(request).get(COOKIE_NAME);
+  const value = cookies(request).get(cookieName);
   if (!value) return false;
   const separator = value.indexOf(".");
   if (separator === -1) return false;
   const expires = value.slice(0, separator);
   const signature = value.slice(separator + 1);
   if (!/^\d+$/.test(expires) || Number(expires) <= Math.floor(Date.now() / 1000)) return false;
-  return secretEquals(signature, await sign(expires, env.SESSION_SECRET));
+  return secretEquals(signature, await sign(`${signatureScope}${expires}`, env.SESSION_SECRET));
 }
 
-export async function createSessionCookie(secret: string): Promise<string> {
+export function hasDashboardSession(request: Request, env: Env): Promise<boolean> {
+  return hasSession(request, env, COOKIE_NAME, "", dashboardAuthEnabled(env));
+}
+
+export function hasDetailsSession(request: Request, env: Env): Promise<boolean> {
+  return hasSession(request, env, DETAILS_COOKIE_NAME, "details:", detailsAuthEnabled(env));
+}
+
+async function createCookie(cookieName: string, signatureScope: string, secret: string): Promise<string> {
   const expires = String(Math.floor(Date.now() / 1000) + SESSION_SECONDS);
-  const signature = await sign(expires, secret);
-  return `${COOKIE_NAME}=${expires}.${signature}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Strict`;
+  const signature = await sign(`${signatureScope}${expires}`, secret);
+  return `${cookieName}=${expires}.${signature}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Strict`;
+}
+
+export function createSessionCookie(secret: string): Promise<string> {
+  return createCookie(COOKIE_NAME, "", secret);
+}
+
+export function createDetailsSessionCookie(secret: string): Promise<string> {
+  return createCookie(DETAILS_COOKIE_NAME, "details:", secret);
 }
 
 export function clearSessionCookie(): string {
   return `${COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict`;
+}
+
+export function clearDetailsSessionCookie(): string {
+  return `${DETAILS_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict`;
 }
 
 export async function hasIngestAccess(request: Request, env: Env): Promise<boolean> {

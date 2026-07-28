@@ -1,9 +1,13 @@
 import {
   authConfigured,
+  clearDetailsSessionCookie,
   clearSessionCookie,
+  createDetailsSessionCookie,
   createSessionCookie,
   dashboardAuthEnabled,
+  detailsAuthEnabled,
   hasDashboardSession,
+  hasDetailsSession,
   hasIngestAccess,
   secretEquals,
 } from "./auth";
@@ -121,10 +125,17 @@ async function ingest(request: Request, env: Env): Promise<Response> {
 
 async function authStatus(request: Request, env: Env): Promise<Response> {
   const enabled = dashboardAuthEnabled(env);
+  const detailsEnabled = detailsAuthEnabled(env);
+  const [authenticated, detailsAuthenticated] = await Promise.all([
+    hasDashboardSession(request, env),
+    hasDetailsSession(request, env),
+  ]);
   return json({
     enabled,
+    detailsEnabled,
     configured: authConfigured(env),
-    authenticated: await hasDashboardSession(request, env),
+    authenticated,
+    detailsAuthenticated,
   });
 }
 
@@ -151,12 +162,45 @@ function logout(request: Request): Response {
   return json({ authenticated: false }, 200, { "set-cookie": clearSessionCookie() });
 }
 
+async function detailsLogin(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  if (!detailsAuthEnabled(env)) return json({ authenticated: true });
+  if (!env.SESSION_SECRET) {
+    return json({ error: "server_misconfigured", message: "SESSION_SECRET is not configured" }, 503);
+  }
+  const body = asObject(await readJson(request, 10_000));
+  const password = typeof body?.password === "string" ? body.password : "";
+  if (!env.DETAILS_PASSWORD || !(await secretEquals(password, env.DETAILS_PASSWORD))) {
+    return json({ error: "invalid_password", message: "采样明细密码不正确" }, 401);
+  }
+  return json(
+    { authenticated: true },
+    200,
+    { "set-cookie": await createDetailsSessionCookie(env.SESSION_SECRET) },
+  );
+}
+
+function detailsLogout(request: Request): Response {
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  return json({ authenticated: false }, 200, { "set-cookie": clearDetailsSessionCookie() });
+}
+
 async function requireDashboardAccess(request: Request, env: Env): Promise<Response | null> {
   if (!authConfigured(env)) {
     return json({ error: "server_misconfigured", message: "SESSION_SECRET is not configured" }, 503);
   }
   if (!(await hasDashboardSession(request, env))) {
     return json({ error: "unauthorized", message: "Dashboard login required" }, 401);
+  }
+  return null;
+}
+
+async function requireDetailsAccess(request: Request, env: Env): Promise<Response | null> {
+  if (!authConfigured(env)) {
+    return json({ error: "server_misconfigured", message: "SESSION_SECRET is not configured" }, 503);
+  }
+  if (!(await hasDetailsSession(request, env))) {
+    return json({ error: "details_auth_required", message: "采样明细密码验证后才能查看" }, 401);
   }
   return null;
 }
@@ -208,6 +252,8 @@ async function events(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method !== "GET") return methodNotAllowed(["GET"]);
   const denied = await requireDashboardAccess(request, env);
   if (denied) return denied;
+  const detailsDenied = await requireDetailsAccess(request, env);
+  if (detailsDenied) return detailsDenied;
   const filters = parseFilters(url);
   const where = buildWhere(filters);
   const cursor = decodeCursor(url.searchParams.get("cursor"));
@@ -266,6 +312,8 @@ async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/auth/status") return authStatus(request, env);
   if (url.pathname === "/api/auth/login") return login(request, env);
   if (url.pathname === "/api/auth/logout") return logout(request);
+  if (url.pathname === "/api/auth/details/login") return detailsLogin(request, env);
+  if (url.pathname === "/api/auth/details/logout") return detailsLogout(request);
   if (url.pathname === "/api/v1/events" && request.method === "POST") return ingest(request, env);
   if (url.pathname === "/api/v1/events") return events(request, env, url);
   if (url.pathname === "/api/v1/report") return report(request, env, url);
