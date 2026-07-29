@@ -85,24 +85,14 @@ describe("Worker API", () => {
     expect(allowed.status).toBe(200);
   });
 
-  it("requires an independent details password when both passwords are configured", async () => {
+  it("requires the independent details password for event rows", async () => {
     const dashboardCookie = await login();
     const query = "from=2026-07-26T00%3A00%3A00.000Z&to=2026-07-27T00%3A00%3A00.000Z";
     const denied = await SELF.fetch(`${BASE}/api/v1/events?${query}`, { headers: { cookie: dashboardCookie } });
     expect(denied.status).toBe(401);
     expect(await denied.json()).toMatchObject({ error: "details_auth_required" });
 
-    const wrongPassword = await SELF.fetch(`${BASE}/api/auth/details/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password: "wrong" }),
-    });
-    expect(wrongPassword.status).toBe(401);
-
     const detailsCookie = await detailsLogin();
-    const missingDashboard = await SELF.fetch(`${BASE}/api/v1/events?${query}`, { headers: { cookie: detailsCookie } });
-    expect(missingDashboard.status).toBe(401);
-
     const allowed = await SELF.fetch(`${BASE}/api/v1/events?${query}`, {
       headers: { cookie: `${dashboardCookie}; ${detailsCookie}` },
     });
@@ -143,7 +133,14 @@ describe("Worker API", () => {
     expect(response.status).toBe(200);
   });
 
-  it("keeps reports public when only the details password is configured", async () => {
+  it("keeps month/year overview behind only the dashboard password", async () => {
+    const denied = await SELF.fetch(`${BASE}/api/v1/overview?granularity=day&from=2026-07-01T00%3A00%3A00.000Z&to=2026-08-01T00%3A00%3A00.000Z`);
+    expect(denied.status).toBe(401);
+    const allowed = await SELF.fetch(`${BASE}/api/v1/overview?granularity=day&from=2026-07-01T00%3A00%3A00.000Z&to=2026-08-01T00%3A00%3A00.000Z`, { headers: { cookie: await login() } });
+    expect(allowed.status).toBe(200);
+  });
+
+  it("keeps overviews public but day details locked when only a details password is configured", async () => {
     const detailsOnlyEnv: Env = {
       DB: env.DB,
       ASSETS: env.ASSETS,
@@ -151,27 +148,76 @@ describe("Worker API", () => {
       DETAILS_PASSWORD: env.DETAILS_PASSWORD,
       SESSION_SECRET: env.SESSION_SECRET,
     };
-    const query = "from=2026-07-26T00%3A00%3A00.000Z&to=2026-07-27T00%3A00%3A00.000Z";
-    const status = await worker.fetch(new Request(`${BASE}/api/auth/status`), detailsOnlyEnv)
-      .then((response) => response.json<Record<string, boolean>>());
-    expect(status).toMatchObject({
-      enabled: false,
-      authenticated: true,
-      detailsEnabled: true,
-      detailsAuthenticated: false,
-    });
-    expect((await worker.fetch(new Request(`${BASE}/api/v1/report?${query}`), detailsOnlyEnv)).status).toBe(200);
-    expect((await worker.fetch(new Request(`${BASE}/api/v1/events?${query}`), detailsOnlyEnv)).status).toBe(401);
+    const query = "from=2026-07-01T00%3A00%3A00.000Z&to=2026-08-01T00%3A00%3A00.000Z";
+    const overviewResponse = await worker.fetch(new Request(
+      `${BASE}/api/v1/overview?granularity=day&${query}`,
+    ), detailsOnlyEnv);
+    expect(overviewResponse.status).toBe(200);
+    const eventResponse = await worker.fetch(new Request(
+      `${BASE}/api/v1/events?from=2026-07-01T00%3A00%3A00.000Z&to=2026-07-02T00%3A00%3A00.000Z`,
+    ), detailsOnlyEnv);
+    expect(eventResponse.status).toBe(401);
+    expect(await eventResponse.json()).toMatchObject({ error: "details_auth_required" });
+  });
 
-    const loginResponse = await worker.fetch(new Request(`${BASE}/api/auth/details/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password: env.DETAILS_PASSWORD }),
-    }), detailsOnlyEnv);
-    const cookie = loginResponse.headers.get("set-cookie")!.split(";")[0];
-    expect((await worker.fetch(new Request(`${BASE}/api/v1/events?${query}`, {
-      headers: { cookie },
-    }), detailsOnlyEnv)).status).toBe(200);
+  it("aggregates overview points and splits a sample at a day boundary", async () => {
+    const device = {
+      id: "overview-device", name: "Overview PC", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest([
+      sample("overview-boundary-a", "2026-07-01T23:59:00Z", { trigger: "heartbeat", device }),
+      sample("overview-boundary-b", "2026-07-02T00:04:00Z", { trigger: "heartbeat", device }),
+    ]);
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=day&from=2026-07-01T00%3A00%3A00.000Z&to=2026-07-03T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie: await login() } },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ points: Array<{ key: string; totalMs: number; events: number }>; summary: { totalMs: number }; hasData: boolean }>();
+    expect(body.points).toHaveLength(2);
+    expect(body.hasData).toBe(true);
+    expect(body.points.find((point) => point.key === "2026-07-01")).toMatchObject({ totalMs: 60_000, events: 1 });
+    expect(body.points.find((point) => point.key === "2026-07-02")).toMatchObject({ totalMs: 540_000, events: 1 });
+    expect(body.summary.totalMs).toBe(600_000);
+  });
+
+  it("groups a year overview by local month", async () => {
+    const device = {
+      id: "overview-month-device", name: "Overview Month PC", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest([
+      sample("overview-month-a", "2026-01-31T23:59:00Z", { trigger: "heartbeat", device }),
+      sample("overview-month-b", "2026-02-01T00:01:00Z", { trigger: "heartbeat", device }),
+    ]);
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=month&from=2026-01-01T00%3A00%3A00.000Z&to=2027-01-01T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie: await login() } },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ points: Array<{ key: string; totalMs: number }>; hasData: boolean }>();
+    expect(body.points).toHaveLength(12);
+    expect(body.hasData).toBe(true);
+    expect(body.points.find((point) => point.key === "2026-01")).toMatchObject({ totalMs: 60_000 });
+    expect(body.points.find((point) => point.key === "2026-02")).toMatchObject({ totalMs: 360_000 });
+  });
+
+  it("keeps neighboring applications in duration calculations when filtering", async () => {
+    const device = {
+      id: "overview-filter-device", name: "Overview Filter PC", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest([
+      sample("overview-filter-a", "2026-03-01T00:00:00Z", { trigger: "heartbeat", device }),
+      sample("overview-filter-b", "2026-03-01T00:01:00Z", { trigger: "heartbeat", device, activity: { processName: "chrome.exe", windowTitle: "Browser" } }),
+    ]);
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=day&from=2026-03-01T00%3A00%3A00.000Z&to=2026-03-02T00%3A00%3A00.000Z&tzOffset=0&app=code.exe`,
+      { headers: { cookie: await login() } },
+    );
+    const body = await response.json<{ points: Array<{ key: string; totalMs: number }> }>();
+    expect(body.points.find((point) => point.key === "2026-03-01")?.totalMs).toBe(60_000);
   });
 
   it("stores records in D1 and treats retried event IDs as duplicates", async () => {

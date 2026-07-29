@@ -54,3 +54,20 @@ export interface QueryFilters {
   app?: string;
   query?: string;
 }
+
+export interface OverviewFilters extends QueryFilters {
+  granularity: "day" | "month";
+  tzOffset: number;
+}
+
+export interface OverviewPoint {
+  key: string;
+  start: number;
+  end: number;
+  events: number;
+  totalMs: number;
+  switches: number;
+  averageCpu: number | null;
+  maximumCpu: number | null;
+  batteryDelta: number | null;
+}

@@ -12,9 +12,10 @@ import {
   secretEquals,
 } from "./auth";
 import { HttpError, json, methodNotAllowed, readJson, securityHeaders } from "./http";
+import { computeOverview } from "./overview";
 import { computeReport } from "./report";
 import type { ActivityEventPayload, ActivityRow, Env } from "./types";
-import { buildWhere, parseFilters, validateEvent } from "./validation";
+import { buildWhere, parseFilters, parseOverviewFilters, validateEvent } from "./validation";
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -225,6 +226,14 @@ async function report(request: Request, env: Env, url: URL): Promise<Response> {
   return json(computeReport(rows, filters, result.results.length > 20_000));
 }
 
+async function overview(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") return methodNotAllowed(["GET"]);
+  const denied = await requireDashboardAccess(request, env);
+  if (denied) return denied;
+  const filters = parseOverviewFilters(url);
+  return json(await computeOverview(env.DB, filters));
+}
+
 interface Cursor {
   at: number;
   id: string;
@@ -317,6 +326,7 @@ async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/v1/events" && request.method === "POST") return ingest(request, env);
   if (url.pathname === "/api/v1/events") return events(request, env, url);
   if (url.pathname === "/api/v1/report") return report(request, env, url);
+  if (url.pathname === "/api/v1/overview") return overview(request, env, url);
   if (url.pathname === "/api/v1/filters") return filters(request, env);
   return json({ error: "not_found", message: "API route not found" }, 404);
 }

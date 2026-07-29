@@ -66,3 +66,26 @@ export interface EventPage {
   items: ActivityEvent[];
   nextCursor: string | null;
 }
+
+export type ViewMode = "day" | "month" | "year";
+
+export interface OverviewPoint {
+  key: string;
+  start: number;
+  end: number;
+  events: number;
+  totalMs: number;
+  switches: number;
+  averageCpu: number | null;
+  maximumCpu: number | null;
+  batteryDelta: number | null;
+}
+
+export interface Overview {
+  granularity: "day" | "month";
+  from: number;
+  to: number;
+  hasData?: boolean;
+  points: OverviewPoint[];
+  summary: Report["summary"];
+}

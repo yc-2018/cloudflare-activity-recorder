@@ -1,6 +1,6 @@
 INGEST_TOKEN=replace-with-a-long-random-token
 # Leave DASHBOARD_PASSWORD unset to make the dashboard public.
 DASHBOARD_PASSWORD=replace-with-a-dashboard-password
-# Leave DETAILS_PASSWORD unset unless the sampling details table needs a second password.
+# Leave DETAILS_PASSWORD unset unless the day-view sampling table needs a second password.
 DETAILS_PASSWORD=replace-with-a-details-password
 SESSION_SECRET=replace-with-another-long-random-secret

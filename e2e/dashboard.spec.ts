@@ -47,7 +47,44 @@ async function mockApi(page: Page) {
   await page.route("**/api/v1/events?*", (route) => route.fulfill({ json: events }));
 }
 
-test("details password locks only the event table", async ({ page }) => {
+const overview = {
+  granularity: "day",
+  from: Date.now() - 31 * 86_400_000,
+  to: Date.now(),
+  summary: report.summary,
+  points: Array.from({ length: 31 }, (_, index) => {
+    const date = new Date(base.getTime() + index * 86_400_000);
+    const key = date.toISOString().slice(0, 10);
+    return { key, start: at(index * 1_440), end: at((index + 1) * 1_440), events: index ? 2 : 4, totalMs: index ? 600_000 : 1_200_000, switches: index % 2, averageCpu: 20 + index % 10, maximumCpu: 60, batteryDelta: -index % 3 };
+  }),
+};
+
+async function mockOverviewApi(page: Page) {
+  await page.route("**/api/auth/status", (route) => route.fulfill({ json: {
+    enabled: false, configured: true, authenticated: true,
+    detailsEnabled: true, detailsAuthenticated: false,
+  } }));
+  await page.route("**/api/v1/filters", (route) => route.fulfill({ json: { devices: [], apps: [] } }));
+  await page.route("**/api/v1/report?*", (route) => route.fulfill({ json: report }));
+  await page.route("**/api/v1/events?*", (route) => route.fulfill({ json: events }));
+  await page.route("**/api/v1/overview?*", async (route) => {
+    const url = new URL(route.request().url());
+    const granularity = url.searchParams.get("granularity") === "month" ? "month" : "day";
+    if (granularity === "day") return route.fulfill({ json: { ...overview, granularity } });
+    return route.fulfill({ json: {
+      ...overview,
+      granularity,
+      points: Array.from({ length: 12 }, (_, index) => ({
+        key: `2026-${String(index + 1).padStart(2, "0")}`,
+        start: Date.parse(`2026-${String(index + 1).padStart(2, "0")}-01T00:00:00Z`),
+        end: Date.parse(`2026-${String(index + 1).padStart(2, "0")}-15T00:00:00Z`),
+        events: index + 1, totalMs: (index + 1) * 600_000, switches: index, averageCpu: 20 + index, maximumCpu: 70, batteryDelta: null,
+      })),
+    } });
+  });
+}
+
+test("the independent password protects only day-view sampling details", async ({ page }) => {
   let detailsAuthenticated = false;
   await page.setViewportSize({ width: 1100, height: 900 });
   await page.route("**/api/auth/status", (route) => route.fulfill({ json: {
@@ -70,34 +107,43 @@ test("details password locks only the event table", async ({ page }) => {
     detailsAuthenticated = false;
     return route.fulfill({ json: { authenticated: false } });
   });
-  await page.route("**/api/v1/filters", (route) => route.fulfill({ json: {
-    devices: [{ id: "pc-1", name: "工作电脑", manufacturer: "Example", model: "Model A" }],
-    apps: ["code.exe", "chrome.exe", "WindowsTerminal.exe"],
-  } }));
+  await page.route("**/api/v1/filters", (route) => route.fulfill({ json: { devices: [], apps: [] } }));
   await page.route("**/api/v1/report?*", (route) => route.fulfill({ json: report }));
   await page.route("**/api/v1/events?*", (route) => route.fulfill({ json: events }));
+  await page.route("**/api/v1/overview?*", (route) => route.fulfill({ json: overview }));
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "活动时间线" })).toBeVisible();
   await expect(page.getByText("采样明细已保护")).toBeVisible();
   await expect(page.locator(".table-panel table")).toHaveCount(0);
-  await page.screenshot({ path: "test-results/dashboard-details-locked-desktop.png", fullPage: true });
 
-  await page.getByLabel("采样明细密码").fill("wrong");
-  await page.getByRole("button", { name: "解锁明细" }).click();
-  await expect(page.getByRole("alert")).toContainText("采样明细密码不正确");
+  await page.getByRole("radio", { name: "月视图" }).check();
+  await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();
+  await expect(page.getByText("采样明细已保护")).toHaveCount(0);
 
+  await page.getByRole("radio", { name: "日视图" }).check();
   await page.getByLabel("采样明细密码").fill("details-secret");
   await page.getByRole("button", { name: "解锁明细" }).click();
   await expect(page.locator(".table-panel table")).toBeVisible();
+});
 
-  await page.getByRole("button", { name: "锁定采样明细" }).click();
-  await expect(page.getByText("采样明细已保护")).toBeVisible();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.reload();
-  await expect(page.getByLabel("采样明细密码")).toBeVisible();
+test("switches between day, month and year views and drills down", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await mockOverviewApi(page);
+  await page.goto("/");
+  await expect(page.getByRole("radio", { name: "日视图" })).toBeChecked();
+
+  await page.getByRole("radio", { name: "月视图" }).check();
+  await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();
+  await expect(page.getByRole("slider", { name: "日期显示开始" })).toBeVisible();
+  await page.locator(".overview-bar").first().click();
+  await expect(page.getByRole("heading", { name: /活动记录|今天干了什么/ })).toBeVisible();
+
+  await page.getByRole("radio", { name: "年视图" }).check();
+  await expect(page.getByRole("heading", { name: "按月活动统计" })).toBeVisible();
+  await expect(page.getByRole("slider", { name: "月份显示开始" })).toBeVisible();
+  await page.locator(".overview-bar").first().click();
+  await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.screenshot({ path: "test-results/dashboard-details-locked-mobile.png", fullPage: true });
 });
 
 for (const viewport of [
