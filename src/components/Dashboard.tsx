@@ -446,31 +446,38 @@ export function Dashboard({
                 </section>
               </>
             ) : overview ? (
-              <section className="panel full-panel overview-panel">
-                <div className="panel-heading"><div><h2>{view === "month" ? "按天活动统计" : "按月活动统计"}</h2><p>点击某个{view === "month" ? "日期" : "月份"}可进入下一层视图</p></div></div>
-                {overviewHasData ? <OverviewChart
-                    points={overviewPoints}
-                    fromIndex={overviewFrom}
-                    toIndex={overviewTo}
-                    granularity={view === "month" ? "day" : "month"}
-                    onSelect={selectOverviewPoint}
-                  /> : <div className="empty-chart overview-empty">当前范围没有记录</div>}
-                {overviewPoints.length > 0 && <RangeSlider
-                  min={0}
-                  max={overviewPoints.length - 1}
-                  from={overviewFrom}
-                  to={overviewTo}
-                  onChange={(from, to) => { setOverviewFrom(from); setOverviewTo(to); }}
-                  startLabel={`${view === "month" ? "日期" : "月份"}显示开始`}
-                  endLabel={`${view === "month" ? "日期" : "月份"}显示结束`}
-                  formatValue={(index) => overviewPoints[index] ? pointDate(overviewPoints[index], view === "month" ? "day" : "month") : "--"}
-                />}
-                {overviewHasData ? <div className="overview-table-wrap"><table className="overview-table"><thead><tr><th>{view === "month" ? "日期" : "月份"}</th><th>记录时长</th><th>事件</th><th>切换</th><th>平均 CPU</th></tr></thead><tbody>
-                    {overviewPoints.slice(overviewFrom, overviewTo + 1).map((point) => <tr key={point.key} onClick={() => selectOverviewPoint(point)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter") selectOverviewPoint(point); }}>
-                      <td>{point.key}</td><td>{formatDuration(point.totalMs)}</td><td>{point.events}</td><td>{point.switches}</td><td>{metric(point.averageCpu)}</td>
-                    </tr>)}
-                  </tbody></table></div> : null}
-              </section>
+              <>
+                <section className="panel full-panel overview-panel">
+                  <div className="panel-heading"><div><h2>{view === "month" ? "按天活动统计" : "按月活动统计"}</h2><p>点击某个{view === "month" ? "日期" : "月份"}可进入下一层视图</p></div></div>
+                  {overviewHasData ? <OverviewChart
+                      points={overviewPoints}
+                      fromIndex={overviewFrom}
+                      toIndex={overviewTo}
+                      granularity={view === "month" ? "day" : "month"}
+                      onSelect={selectOverviewPoint}
+                    /> : <div className="empty-chart overview-empty">当前范围没有记录</div>}
+                  {overviewPoints.length > 0 && <RangeSlider
+                    min={0}
+                    max={overviewPoints.length - 1}
+                    from={overviewFrom}
+                    to={overviewTo}
+                    onChange={(from, to) => { setOverviewFrom(from); setOverviewTo(to); }}
+                    startLabel={`${view === "month" ? "日期" : "月份"}显示开始`}
+                    endLabel={`${view === "month" ? "日期" : "月份"}显示结束`}
+                    formatValue={(index) => overviewPoints[index] ? pointDate(overviewPoints[index], view === "month" ? "day" : "month") : "--"}
+                  />}
+                  {overviewHasData ? <div className="overview-table-wrap"><table className="overview-table"><thead><tr><th>{view === "month" ? "日期" : "月份"}</th><th>记录时长</th><th>事件</th><th>切换</th><th>平均 CPU</th></tr></thead><tbody>
+                      {overviewPoints.slice(overviewFrom, overviewTo + 1).map((point) => <tr key={point.key} onClick={() => selectOverviewPoint(point)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter") selectOverviewPoint(point); }}>
+                        <td>{point.key}</td><td>{formatDuration(point.totalMs)}</td><td>{point.events}</td><td>{point.switches}</td><td>{metric(point.averageCpu)}</td>
+                      </tr>)}
+                    </tbody></table></div> : null}
+                </section>
+
+                <section className="panel full-panel">
+                  <div className="panel-heading"><div><h2>用时前十应用排行</h2><p>按当前{view === "month" ? "月份" : "年份"}的推算使用时长排序，点击应用可筛选</p></div></div>
+                  <div className="chart-body app-chart"><AppDurationChart apps={overview.apps ?? []} onSelectApp={setApp} /></div>
+                </section>
+              </>
             ) : null}
           </>
         )}

@@ -39,7 +39,7 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
   const spillKey = keyFor("(bucket_end + 1)");
   const spillEnd = endFor("(bucket_end + 1)");
 
-  const sql = `
+  const baseSql = `
     WITH ordered_all AS (
       SELECT e.id, e.device_id, e.observed_at, e.process_name, e.window_title,
              e.cpu_percent, e.memory_percent, e.battery_percent, e.power_plugged,
@@ -72,7 +72,7 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
         FROM ordered
     ),
     slices AS (
-      SELECT bucket, bucket_start, bucket_end, device_id,
+      SELECT bucket, bucket_start, bucket_end, device_id, process_name,
              1 AS event_count,
              CASE WHEN process_name IN ('LockScreen', 'Desktop') THEN 0
                   ELSE MAX(0, MIN(raw_end, bucket_end) - MAX(observed_at, bucket_start)) END AS total_ms,
@@ -85,7 +85,7 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
       SELECT ${spillKey} AS bucket,
              bucket_end AS bucket_start,
              ${spillEnd} AS bucket_end,
-             device_id,
+             device_id, process_name,
              0 AS event_count,
              MAX(0, raw_end - bucket_end) AS total_ms,
              0 AS switch_count,
@@ -94,7 +94,9 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
         FROM bucketed
        WHERE raw_end > bucket_end
          AND process_name NOT IN ('LockScreen', 'Desktop')
-    ),
+    )`;
+
+  const sql = `${baseSql},
     grouped AS (
       SELECT bucket AS key,
              MIN(bucket_start) AS start,
@@ -124,6 +126,15 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
     )
     SELECT * FROM grouped`;
 
+  const appsSql = `${baseSql}
+    SELECT process_name, SUM(total_ms) AS duration_ms
+      FROM slices
+     WHERE process_name NOT IN ('LockScreen', 'Desktop')
+       AND total_ms > 0
+     GROUP BY process_name
+     ORDER BY duration_ms DESC, process_name COLLATE NOCASE
+     LIMIT 10`;
+
   interface RawPoint {
     key: string;
     start: number;
@@ -141,7 +152,13 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
     global_device_count: number;
   }
 
+  interface RawApp {
+    process_name: string;
+    duration_ms: number;
+  }
+
   const result = await db.prepare(sql).bind(...contextWhere.values, ...activityValues).all<RawPoint>();
+  const appResult = await db.prepare(appsSql).bind(...contextWhere.values, ...activityValues).all<RawApp>();
   const rows = result.results ?? [];
   const populated: OverviewPoint[] = rows.map((row) => ({
     key: row.key,
@@ -227,6 +244,10 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
     to: filters.to,
     hasData: populated.some((point) => point.events > 0 || point.totalMs > 0),
     points,
+    apps: (appResult.results ?? []).map((row) => ({
+      processName: row.process_name,
+      durationMs: Number(row.duration_ms ?? 0),
+    })),
     summary: {
       totalMs: points.reduce((sum, point) => sum + point.totalMs, 0),
       switches: points.reduce((sum, point) => sum + point.switches, 0),

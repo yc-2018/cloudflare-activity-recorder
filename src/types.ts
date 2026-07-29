@@ -87,5 +87,6 @@ export interface Overview {
   to: number;
   hasData?: boolean;
   points: OverviewPoint[];
+  apps: Report["apps"];
   summary: Report["summary"];
 }

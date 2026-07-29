@@ -52,6 +52,7 @@ const overview = {
   from: Date.now() - 31 * 86_400_000,
   to: Date.now(),
   summary: report.summary,
+  apps: report.apps,
   points: Array.from({ length: 31 }, (_, index) => {
     const date = new Date(base.getTime() + index * 86_400_000);
     const key = date.toISOString().slice(0, 10);
@@ -134,12 +135,14 @@ test("switches between day, month and year views and drills down", async ({ page
 
   await page.getByRole("radio", { name: "月视图" }).check();
   await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "用时前十应用排行" })).toBeVisible();
   await expect(page.getByRole("slider", { name: "日期显示开始" })).toBeVisible();
   await page.locator(".overview-bar").first().click();
   await expect(page.getByRole("heading", { name: /活动记录|今天干了什么/ })).toBeVisible();
 
   await page.getByRole("radio", { name: "年视图" }).check();
   await expect(page.getByRole("heading", { name: "按月活动统计" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "用时前十应用排行" })).toBeVisible();
   await expect(page.getByRole("slider", { name: "月份显示开始" })).toBeVisible();
   await page.locator(".overview-bar").first().click();
   await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();

@@ -220,6 +220,34 @@ describe("Worker API", () => {
     expect(body.points.find((point) => point.key === "2026-03-01")?.totalMs).toBe(60_000);
   });
 
+  it("returns the ten longest-running applications for overview views", async () => {
+    const device = {
+      id: "overview-ranking-device", name: "Overview Ranking PC", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest(Array.from({ length: 11 }, (_, index) => sample(
+      `overview-ranking-${String(index).padStart(2, "0")}`,
+      new Date(Date.parse("2026-04-01T00:00:00Z") + index * 60_000).toISOString(),
+      {
+        device,
+        activity: {
+          processName: `process-${String(index).padStart(2, "0")}.exe`,
+          windowTitle: `Application ${index}`,
+        },
+      },
+    )));
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=day&from=2026-04-01T00%3A00%3A00.000Z&to=2026-04-02T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie: await login() } },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ apps: Array<{ processName: string; durationMs: number }> }>();
+    expect(body.apps).toHaveLength(10);
+    expect(body.apps[0]).toEqual({ processName: "process-10.exe", durationMs: 300_000 });
+    expect(body.apps.map((item) => item.processName)).toContain("process-00.exe");
+    expect(body.apps.map((item) => item.processName)).not.toContain("process-09.exe");
+  });
+
   it("stores records in D1 and treats retried event IDs as duplicates", async () => {
     const event = sample("event-idempotent", "2026-07-26T01:00:00Z");
     const later = sample("event-device-later", "2026-07-26T02:00:00Z");
