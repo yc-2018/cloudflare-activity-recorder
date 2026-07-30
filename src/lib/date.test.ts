@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDays, addMonths, addYears, formatDuration, inclusiveRange, localMonthRange, localYearRange } from "./date";
+import { addDays, addMonths, addYears, currentBucketEndIndex, formatDuration, inclusiveRange, localMonthRange, localYearRange } from "./date";
 
 describe("date helpers", () => {
   it("builds inclusive local date boundaries", () => {
@@ -17,5 +17,12 @@ describe("date helpers", () => {
     expect(addYears("2026", -1)).toBe("2025");
     expect(Date.parse(localMonthRange("2026-07").toIso) - Date.parse(localMonthRange("2026-07").fromIso)).toBe(31 * 86_400_000);
     expect(Date.parse(localYearRange("2026").toIso) - Date.parse(localYearRange("2026").fromIso)).toBe(365 * 86_400_000);
+  });
+
+  it("finds the current day or month index for overview sliders", () => {
+    const now = new Date("2026-07-09T12:00:00");
+    expect(currentBucketEndIndex("2026-07", "day", now)).toBe(8);
+    expect(currentBucketEndIndex("2026", "month", now)).toBe(6);
+    expect(currentBucketEndIndex("2026-06", "day", now)).toBeNull();
   });
 });

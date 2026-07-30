@@ -5,6 +5,17 @@ export function localDateString(date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+export function currentBucketEndIndex(
+  period: string,
+  granularity: "day" | "month",
+  now = new Date(),
+): number | null {
+  const today = localDateString(now);
+  if (granularity === "day" && period === today.slice(0, 7)) return now.getDate() - 1;
+  if (granularity === "month" && period === today.slice(0, 4)) return now.getMonth();
+  return null;
+}
+
 export function addDays(value: string, amount: number): string {
   const date = new Date(`${value}T12:00:00`);
   date.setDate(date.getDate() + amount);

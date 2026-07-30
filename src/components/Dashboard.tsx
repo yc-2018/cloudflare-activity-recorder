@@ -19,6 +19,7 @@ import {
   addDays,
   addMonths,
   addYears,
+  currentBucketEndIndex,
   formatDuration,
   inclusiveRange,
   localDateString,
@@ -69,12 +70,17 @@ function validYear(value: string | null): value is string {
 function initialState(): InitialState {
   const params = new URLSearchParams(window.location.search);
   const today = localDateString();
+  const currentMonth = today.slice(0, 7);
+  const currentYear = today.slice(0, 4);
   const legacyDay = validDate(params.get("from")) ? params.get("from")! : today;
   const viewParam = params.get("view");
   const view: ViewMode = viewParam === "month" || viewParam === "year" || viewParam === "day" ? viewParam : "day";
-  const day = validDate(params.get("date")) ? params.get("date")! : legacyDay;
-  const month = validMonth(params.get("month")) ? params.get("month")! : day.slice(0, 7);
-  const year = validYear(params.get("year")) ? params.get("year")! : day.slice(0, 4);
+  const requestedDay = validDate(params.get("date")) ? params.get("date")! : legacyDay;
+  const day = requestedDay > today ? today : requestedDay;
+  const requestedMonth = validMonth(params.get("month")) ? params.get("month")! : day.slice(0, 7);
+  const month = requestedMonth > currentMonth ? currentMonth : requestedMonth;
+  const requestedYear = validYear(params.get("year")) ? params.get("year")! : day.slice(0, 4);
+  const year = requestedYear > currentYear ? currentYear : requestedYear;
   return {
     view,
     day,
@@ -152,6 +158,9 @@ export function Dashboard({
   const [metricTo, setMetricTo] = useState(0);
   const [overviewFrom, setOverviewFrom] = useState(0);
   const [overviewTo, setOverviewTo] = useState(0);
+  const today = localDateString();
+  const currentMonth = today.slice(0, 7);
+  const currentYear = today.slice(0, 4);
 
   const range = useMemo(() => {
     if (view === "day") return inclusiveRange(day, day);
@@ -265,14 +274,27 @@ export function Dashboard({
   }, [report]);
 
   useEffect(() => {
+    const currentIndex = currentBucketEndIndex(
+      view === "month" ? month : year,
+      view === "month" ? "day" : "month",
+    );
     setOverviewFrom(0);
-    setOverviewTo(Math.max(0, overviewPoints.length - 1));
-  }, [overviewPoints]);
+    setOverviewTo(Math.max(0, Math.min(overviewPoints.length - 1, currentIndex ?? overviewPoints.length - 1)));
+  }, [month, overviewPoints, view, year]);
 
   function shift(direction: number) {
-    if (view === "day") setDay((current) => addDays(current, direction));
-    else if (view === "month") setMonth((current) => addMonths(current, direction));
-    else setYear((current) => addYears(current, direction));
+    if (view === "day") setDay((current) => {
+      const next = addDays(current, direction);
+      return next > today ? today : next;
+    });
+    else if (view === "month") setMonth((current) => {
+      const next = addMonths(current, direction);
+      return next > currentMonth ? currentMonth : next;
+    });
+    else setYear((current) => {
+      const next = addYears(current, direction);
+      return next > currentYear ? currentYear : next;
+    });
   }
 
   function setCurrentPeriod() {
@@ -337,6 +359,7 @@ export function Dashboard({
   const data = view === "day" ? report : overview;
   const summary = data?.summary;
   const overviewHasData = Boolean(overview?.hasData ?? overview?.points.some((point) => point.events > 0 || point.totalMs > 0));
+  const isCurrentPeriod = view === "day" ? day >= today : view === "month" ? month >= currentMonth : year >= currentYear;
 
   return (
     <div className="app-shell">
@@ -367,10 +390,10 @@ export function Dashboard({
         <section className="filter-band" aria-label="筛选条件">
           <div className="date-controls">
             <button className="icon-button previous-period" onClick={() => shift(-1)} title="上一时段" aria-label="上一时段"><ChevronLeft size={18} /></button>
-            {view === "day" && <label><span>日期</span><input type="date" value={day} onChange={(event) => { if (validDate(event.target.value)) setDay(event.target.value); }} /></label>}
-            {view === "month" && <label><span>月份</span><input type="month" value={month} onChange={(event) => { if (validMonth(event.target.value)) setMonth(event.target.value); }} /></label>}
-            {view === "year" && <label><span>年份</span><input className="year-input" type="number" min="2000" max="2100" value={year} onChange={(event) => { if (validYear(event.target.value)) setYear(event.target.value); }} /></label>}
-            <button className="icon-button next-period" onClick={() => shift(1)} title="下一时段" aria-label="下一时段"><ChevronRight size={18} /></button>
+            {view === "day" && <label><span>日期</span><input type="date" max={today} value={day} onChange={(event) => { if (validDate(event.target.value) && event.target.value <= today) setDay(event.target.value); }} /></label>}
+            {view === "month" && <label><span>月份</span><input type="month" max={currentMonth} value={month} onChange={(event) => { if (validMonth(event.target.value) && event.target.value <= currentMonth) setMonth(event.target.value); }} /></label>}
+            {view === "year" && <label><span>年份</span><input className="year-input" type="number" min="2000" max={currentYear} value={year} onChange={(event) => { if (validYear(event.target.value) && event.target.value <= currentYear) setYear(event.target.value); }} /></label>}
+            <button className="icon-button next-period" onClick={() => shift(1)} title="下一时段" aria-label="下一时段" disabled={isCurrentPeriod}><ChevronRight size={18} /></button>
             <button className="text-button" onClick={setCurrentPeriod}>{view === "day" ? "今天" : view === "month" ? "本月" : "今年"}</button>
           </div>
           <div className="filter-controls">

@@ -3,6 +3,9 @@ import { expect, test, type Page } from "@playwright/test";
 const base = new Date();
 base.setHours(8, 0, 0, 0);
 const at = (minutes: number) => base.getTime() + minutes * 60_000;
+const todayValue = `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}-${String(base.getDate()).padStart(2, "0")}`;
+const currentMonthValue = todayValue.slice(0, 7);
+const currentYearValue = todayValue.slice(0, 4);
 
 const report = {
   summary: { totalMs: 14_400_000, switches: 18, events: 64, averageCpu: 22.4, maximumCpu: 79.1, batteryDelta: -16 },
@@ -147,6 +150,29 @@ test("switches between day, month and year views and drills down", async ({ page
   await page.locator(".overview-bar").first().click();
   await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("prevents future periods and defaults current overview ranges to now", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await mockOverviewApi(page);
+  await page.goto("/?view=day&date=2999-01-01");
+
+  const dayInput = page.getByLabel("日期");
+  await expect(dayInput).toHaveValue(todayValue);
+  await expect(dayInput).toHaveAttribute("max", todayValue);
+  await expect(page.getByRole("button", { name: "下一时段" })).toBeDisabled();
+
+  await page.getByRole("radio", { name: "月视图" }).check();
+  const monthInput = page.getByLabel("月份");
+  await expect(monthInput).toHaveValue(currentMonthValue);
+  await expect(monthInput).toHaveAttribute("max", currentMonthValue);
+  await expect(page.getByRole("slider", { name: "日期显示结束" })).toHaveValue(String(base.getDate() - 1));
+
+  await page.getByRole("radio", { name: "年视图" }).check();
+  const yearInput = page.getByLabel("年份");
+  await expect(yearInput).toHaveValue(currentYearValue);
+  await expect(yearInput).toHaveAttribute("max", currentYearValue);
+  await expect(page.getByRole("slider", { name: "月份显示结束" })).toHaveValue(String(base.getMonth()));
 });
 
 for (const viewport of [

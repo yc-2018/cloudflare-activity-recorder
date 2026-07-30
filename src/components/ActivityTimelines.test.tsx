@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { Report } from "../types";
-import { AppActivityTimeline } from "./AppActivityTimeline";
+import { AppActivityTimeline, defaultActivityView } from "./AppActivityTimeline";
 import { Timeline } from "./Timeline";
 
 function segment(
@@ -22,6 +22,12 @@ function segment(
 }
 
 describe("activity timeline tooltips", () => {
+  it("defaults today's distribution range to the current time", () => {
+    const hour = 60 * 60_000;
+    expect(defaultActivityView(0, 24 * hour, 9 * hour)).toEqual({ from: 0, to: 9 * hour });
+    expect(defaultActivityView(0, 24 * hour, 30 * hour)).toEqual({ from: 0, to: 24 * hour });
+  });
+
   it("shows an immediate custom tooltip for a timeline segment", () => {
     const { container } = render(
       <Timeline

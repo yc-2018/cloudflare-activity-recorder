@@ -8,6 +8,12 @@ import { FloatingTooltip } from "./FloatingTooltip";
 const colors = ["#26736a", "#d4573f", "#b58324", "#5573a3", "#7c5d8f", "#52744a", "#a05462"];
 const MINIMUM_VIEW_MS = 5 * 60_000;
 
+export function defaultActivityView(from: number, to: number, now = Date.now()) {
+  if (now <= from || now >= to) return { from, to };
+  const minimumView = Math.min(MINIMUM_VIEW_MS, Math.max(0, to - from));
+  return { from, to: Math.min(to, Math.max(now, from + minimumView)) };
+}
+
 function colorFor(value: string): string {
   let hash = 0;
   for (const character of value) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
@@ -35,12 +41,13 @@ interface CursorState {
 }
 
 export function AppActivityTimeline({ timeline, from, to }: AppActivityTimelineProps) {
+  const defaultView = useMemo(() => defaultActivityView(from, to), [from, to]);
   const [cursor, setCursor] = useState<CursorState | null>(null);
-  const [view, setView] = useState({ from, to });
+  const [view, setView] = useState(defaultView);
   useEffect(() => {
-    setView({ from, to });
+    setView(defaultView);
     setCursor(null);
-  }, [from, to]);
+  }, [defaultView]);
 
   const allIntervals = useMemo(() => mergeAppActivity(timeline), [timeline]);
   const grouped = useMemo(() => {
@@ -60,11 +67,11 @@ export function AppActivityTimeline({ timeline, from, to }: AppActivityTimelineP
     return { apps, byApp, intervals };
   }, [allIntervals, view.from, view.to]);
   const { apps, byApp, intervals } = grouped;
-  const fullSpan = Math.max(1, to - from);
+  const fullSpan = Math.max(1, defaultView.to - defaultView.from);
   const span = Math.max(1, view.to - view.from);
   const minimumView = Math.min(MINIMUM_VIEW_MS, fullSpan);
   const rangeStep = Math.max(1, Math.min(60_000, Math.floor(fullSpan / 1_000)));
-  const isFiltered = view.from > from || view.to < to;
+  const isFiltered = view.from > defaultView.from || view.to < defaultView.to;
   const updateCursor = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const track = event.currentTarget.querySelector<HTMLElement>(".app-activity-track");
     if (!track) return;
@@ -141,7 +148,7 @@ export function AppActivityTimeline({ timeline, from, to }: AppActivityTimelineP
             title="恢复完整时间范围"
             disabled={!isFiltered}
             onClick={() => {
-              setView({ from, to });
+              setView(defaultView);
               setCursor(null);
             }}
           >
@@ -153,7 +160,7 @@ export function AppActivityTimeline({ timeline, from, to }: AppActivityTimelineP
           <span
             className="app-activity-range-selection"
             style={{
-              left: `${(view.from - from) / fullSpan * 100}%`,
+              left: `${(view.from - defaultView.from) / fullSpan * 100}%`,
               width: `${(view.to - view.from) / fullSpan * 100}%`,
             }}
             aria-hidden="true"
@@ -161,8 +168,8 @@ export function AppActivityTimeline({ timeline, from, to }: AppActivityTimelineP
           <input
             className="app-activity-range-input"
             type="range"
-            min={from}
-            max={to}
+            min={defaultView.from}
+            max={defaultView.to}
             step={rangeStep}
             value={view.from}
             aria-label="应用活动显示开始时间"
@@ -176,8 +183,8 @@ export function AppActivityTimeline({ timeline, from, to }: AppActivityTimelineP
           <input
             className="app-activity-range-input"
             type="range"
-            min={from}
-            max={to}
+            min={defaultView.from}
+            max={defaultView.to}
             step={rangeStep}
             value={view.to}
             aria-label="应用活动显示结束时间"
