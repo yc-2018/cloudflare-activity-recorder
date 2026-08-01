@@ -20,7 +20,7 @@ const report = {
     { deviceId: "pc-1", deviceName: "工作电脑", processName: "WindowsTerminal.exe", windowTitle: "PowerShell", start: at(150), end: at(180), durationMs: 1_800_000 },
   ],
   metrics: Array.from({ length: 18 }, (_, index) => ({
-    at: at(index * 10), deviceId: index % 2 ? "pc-2" : "pc-1", cpuPercent: 12 + (index * 7) % 55,
+    at: at(index * 10), deviceId: `pc-${index % 3 + 1}`, cpuPercent: 12 + (index * 7) % 55,
     memoryPercent: 43 + index * 0.6, batteryPercent: 92 - index,
     powerPlugged: index < 3,
   })),
@@ -46,6 +46,7 @@ async function mockApi(page: Page) {
     devices: [
       { id: "pc-1", name: "工作电脑", manufacturer: "Example", model: "Model A" },
       { id: "pc-2", name: "随身笔记本", manufacturer: "Example", model: "Model B" },
+      { id: "pc-3", name: "家用电脑", manufacturer: "Example", model: "Model C" },
     ],
     apps: ["code.exe", "chrome.exe", "WindowsTerminal.exe"],
   } }));
@@ -217,10 +218,15 @@ for (const viewport of [
     await expect(page.getByRole("heading", { name: "活动时间线" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "应用活动分布" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "采样明细" })).toBeVisible();
-    await expect(page.locator(".device-metrics-card")).toHaveCount(2);
+    await expect(page.locator(".device-metrics-card")).toHaveCount(3);
     await expect(page.getByRole("region", { name: "工作电脑 系统状态" })).toBeVisible();
     await expect(page.getByRole("region", { name: "随身笔记本 系统状态" })).toBeVisible();
-    await expect(page.locator("canvas")).toHaveCount(3);
+    await expect(page.getByRole("region", { name: "家用电脑 系统状态" })).toBeVisible();
+    await expect(page.locator("canvas")).toHaveCount(4);
+    const metricColumns = await page.locator(".device-metrics-grid").evaluate((element) =>
+      getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length,
+    );
+    expect(metricColumns).toBe(viewport.width <= 700 ? 1 : 2);
     await expect(page.locator(".app-activity-segment")).toHaveCount(3);
     await expect(page.locator(".app-activity-body button")).toHaveCount(0);
     const rangeStart = page.getByRole("slider", { name: "应用活动显示开始时间" });
