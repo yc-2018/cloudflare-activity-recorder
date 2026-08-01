@@ -85,6 +85,23 @@ describe("Worker API", () => {
     expect(allowed.status).toBe(200);
   });
 
+  it("accepts the signed session header when a browser cannot retain cookies", async () => {
+    const response = await SELF.fetch(`${BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: "test-dashboard-password" }),
+    });
+    const body = await response.json<{ session: string }>();
+    expect(body.session).toBeTruthy();
+    expect(response.headers.get("set-cookie")).toContain("SameSite=Lax");
+    expect(response.headers.get("set-cookie")).toContain("Expires=");
+
+    const allowed = await SELF.fetch(`${BASE}/api/v1/filters`, {
+      headers: { "x-activity-session": body.session },
+    });
+    expect(allowed.status).toBe(200);
+  });
+
   it("requires the independent details password for event rows", async () => {
     const dashboardCookie = await login();
     const query = "from=2026-07-26T00%3A00%3A00.000Z&to=2026-07-27T00%3A00%3A00.000Z";

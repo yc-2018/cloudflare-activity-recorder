@@ -20,7 +20,7 @@ const report = {
     { deviceId: "pc-1", deviceName: "工作电脑", processName: "WindowsTerminal.exe", windowTitle: "PowerShell", start: at(150), end: at(180), durationMs: 1_800_000 },
   ],
   metrics: Array.from({ length: 18 }, (_, index) => ({
-    at: at(index * 10), deviceId: "pc-1", cpuPercent: 12 + (index * 7) % 55,
+    at: at(index * 10), deviceId: index % 2 ? "pc-2" : "pc-1", cpuPercent: 12 + (index * 7) % 55,
     memoryPercent: 43 + index * 0.6, batteryPercent: 92 - index,
     powerPlugged: index < 3,
   })),
@@ -43,7 +43,10 @@ async function mockApi(page: Page) {
     detailsEnabled: false, detailsAuthenticated: true,
   } }));
   await page.route("**/api/v1/filters", (route) => route.fulfill({ json: {
-    devices: [{ id: "pc-1", name: "工作电脑", manufacturer: "Example", model: "Model A" }],
+    devices: [
+      { id: "pc-1", name: "工作电脑", manufacturer: "Example", model: "Model A" },
+      { id: "pc-2", name: "随身笔记本", manufacturer: "Example", model: "Model B" },
+    ],
     apps: ["code.exe", "chrome.exe", "WindowsTerminal.exe"],
   } }));
   await page.route("**/api/v1/report?*", (route) => route.fulfill({ json: report }));
@@ -87,6 +90,33 @@ async function mockOverviewApi(page: Page) {
     } });
   });
 }
+
+test("logs in when the browser rejects the session cookie", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/auth/status", (route) => {
+    const authenticated = route.request().headers()["x-activity-session"] === "mobile-signed-session";
+    return route.fulfill({ json: {
+      enabled: true, configured: true, authenticated,
+      detailsEnabled: false, detailsAuthenticated: true,
+    } });
+  });
+  await page.route("**/api/auth/login", async (route) => {
+    const body = route.request().postDataJSON() as { password?: string };
+    if (body.password !== "mobile-password") {
+      await route.fulfill({ status: 401, json: { message: "密码不正确" } });
+      return;
+    }
+    await route.fulfill({ json: { authenticated: true, session: "mobile-signed-session" } });
+  });
+  await page.route("**/api/v1/filters", (route) => route.fulfill({ json: { devices: [], apps: [] } }));
+  await page.route("**/api/v1/report?*", (route) => route.fulfill({ json: report }));
+  await page.route("**/api/v1/events?*", (route) => route.fulfill({ json: events }));
+
+  await page.goto("/");
+  await page.getByLabel("密码").fill("mobile-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await expect(page.getByRole("heading", { name: "今天干了什么" })).toBeVisible();
+});
 
 test("the independent password protects only day-view sampling details", async ({ page }) => {
   let detailsAuthenticated = false;
@@ -187,7 +217,10 @@ for (const viewport of [
     await expect(page.getByRole("heading", { name: "活动时间线" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "应用活动分布" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "采样明细" })).toBeVisible();
-    await expect(page.locator("canvas")).toHaveCount(2);
+    await expect(page.locator(".device-metrics-card")).toHaveCount(2);
+    await expect(page.getByRole("region", { name: "工作电脑 系统状态" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "随身笔记本 系统状态" })).toBeVisible();
+    await expect(page.locator("canvas")).toHaveCount(3);
     await expect(page.locator(".app-activity-segment")).toHaveCount(3);
     await expect(page.locator(".app-activity-body button")).toHaveCount(0);
     const rangeStart = page.getByRole("slider", { name: "应用活动显示开始时间" });

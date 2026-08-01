@@ -2,8 +2,8 @@ import {
   authConfigured,
   clearDetailsSessionCookie,
   clearSessionCookie,
-  createDetailsSessionCookie,
-  createSessionCookie,
+  createDashboardSession,
+  createDetailsSession,
   dashboardAuthEnabled,
   detailsAuthEnabled,
   hasDashboardSession,
@@ -151,10 +151,11 @@ async function login(request: Request, env: Env): Promise<Response> {
   if (!env.DASHBOARD_PASSWORD || !(await secretEquals(password, env.DASHBOARD_PASSWORD))) {
     return json({ error: "invalid_password", message: "密码不正确" }, 401);
   }
+  const session = await createDashboardSession(env.SESSION_SECRET);
   return json(
-    { authenticated: true },
+    { authenticated: true, session: session.value },
     200,
-    { "set-cookie": await createSessionCookie(env.SESSION_SECRET) },
+    { "set-cookie": session.cookie },
   );
 }
 
@@ -174,10 +175,11 @@ async function detailsLogin(request: Request, env: Env): Promise<Response> {
   if (!env.DETAILS_PASSWORD || !(await secretEquals(password, env.DETAILS_PASSWORD))) {
     return json({ error: "invalid_password", message: "采样明细密码不正确" }, 401);
   }
+  const session = await createDetailsSession(env.SESSION_SECRET);
   return json(
-    { authenticated: true },
+    { authenticated: true, detailsSession: session.value },
     200,
-    { "set-cookie": await createDetailsSessionCookie(env.SESSION_SECRET) },
+    { "set-cookie": session.cookie },
   );
 }
 

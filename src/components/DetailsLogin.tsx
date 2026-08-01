@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { LockKeyhole } from "lucide-react";
-import { api } from "../lib/api";
+import { api, saveDetailsSession } from "../lib/api";
 
 interface DetailsLoginProps {
   onSuccess: () => void;
@@ -16,10 +16,11 @@ export function DetailsLogin({ onSuccess }: DetailsLoginProps) {
     setLoading(true);
     setError("");
     try {
-      await api("/api/auth/details/login", {
+      const result = await api<{ detailsSession?: string }>("/api/auth/details/login", {
         method: "POST",
         body: JSON.stringify({ password }),
       });
+      if (result.detailsSession) saveDetailsSession(result.detailsSession);
       setPassword("");
       onSuccess();
     } catch (requestError) {

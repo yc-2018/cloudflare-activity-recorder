@@ -12,7 +12,7 @@ import {
   Tooltip,
 } from "chart.js";
 import { Bar, Line } from "react-chartjs-2";
-import type { Report } from "../types";
+import type { DeviceOption, Report } from "../types";
 import { formatDuration } from "../lib/date";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, TimeScale, Tooltip, Legend, Title, Filler);
@@ -95,5 +95,41 @@ export function MetricsChart({ metrics }: { metrics: Report["metrics"] }) {
         },
       }}
     />
+  );
+}
+
+interface DeviceMetricsChartsProps {
+  metrics: Report["metrics"];
+  devices: DeviceOption[];
+}
+
+export function DeviceMetricsCharts({ metrics, devices }: DeviceMetricsChartsProps) {
+  const names = new Map(devices.map((device) => [device.id, device.name]));
+  const grouped = new Map<string, Report["metrics"]>();
+  for (const metric of metrics) {
+    const items = grouped.get(metric.deviceId) ?? [];
+    items.push(metric);
+    grouped.set(metric.deviceId, items);
+  }
+
+  const groups = [...grouped.entries()].map(([deviceId, items]) => ({
+    deviceId,
+    deviceName: names.get(deviceId) ?? deviceId,
+    metrics: items,
+  }));
+
+  if (groups.length <= 1) {
+    return <div className="chart-body metrics-chart-body"><MetricsChart metrics={metrics} /></div>;
+  }
+
+  return (
+    <div className="device-metrics-grid" aria-label="按设备显示的系统状态">
+      {groups.map((group) => (
+        <section className="device-metrics-card" key={group.deviceId} aria-label={`${group.deviceName} 系统状态`}>
+          <h3 title={group.deviceName}>{group.deviceName}</h3>
+          <div className="device-metrics-chart"><MetricsChart metrics={group.metrics} /></div>
+        </section>
+      ))}
+    </div>
   );
 }

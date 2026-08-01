@@ -65,6 +65,8 @@ npx wrangler secret put DETAILS_PASSWORD
 
 只要设置了任意一个查看密码，就必须同时配置 `SESSION_SECRET`。
 
+登录成功后优先使用 7 天有效的 `HttpOnly + Secure + SameSite=Lax` Cookie。若部分安卓浏览器或 WebView 拒绝保存 Cookie，页面会把同一个 HMAC 签名会话临时保存在当前标签页的 `sessionStorage` 中作为后备；不会保存仪表盘密码，关闭该标签页后后备会话即消失。
+
 ### 4. 部署
 
 ```powershell

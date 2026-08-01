@@ -14,7 +14,7 @@ import {
   Timer,
   Zap,
 } from "lucide-react";
-import { api, ApiError } from "../lib/api";
+import { api, ApiError, clearDashboardSession, clearDetailsSession } from "../lib/api";
 import {
   addDays,
   addMonths,
@@ -28,7 +28,7 @@ import {
   monthDays,
 } from "../lib/date";
 import type { EventPage, FilterOptions, Overview, OverviewPoint, Report, ViewMode } from "../types";
-import { AppDurationChart, MetricsChart } from "./Charts";
+import { AppDurationChart, DeviceMetricsCharts } from "./Charts";
 import { AppActivityTimeline } from "./AppActivityTimeline";
 import { DetailsLogin } from "./DetailsLogin";
 import { OverviewChart } from "./OverviewChart";
@@ -336,11 +336,13 @@ export function Dashboard({
   }
 
   async function logout() {
+    clearDashboardSession();
     await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     onLogout();
   }
 
   async function lockDetails() {
+    clearDetailsSession();
     await api("/api/auth/details/logout", { method: "POST" }).catch(() => undefined);
     onUnauthorized();
   }
@@ -429,7 +431,7 @@ export function Dashboard({
 
                 <section className="chart-grid">
                   <article className="panel"><div className="panel-heading"><div><h2>应用使用排行</h2><p>按推算使用时长排序，点击应用可筛选</p></div></div><div className="chart-body app-chart"><AppDurationChart apps={report.apps} onSelectApp={setApp} /></div></article>
-                  <article className="panel"><div className="panel-heading"><div><h2>系统状态</h2><p>CPU、内存和电量；三角点表示正在充电</p></div></div><div className="chart-body metrics-chart-body"><MetricsChart metrics={visibleMetrics} /></div>
+                  <article className="panel"><div className="panel-heading"><div><h2>系统状态</h2><p>CPU、内存和电量；多台设备会分别显示，三角点表示正在充电</p></div></div><DeviceMetricsCharts metrics={visibleMetrics} devices={options.devices} />
                     {report.metrics.length > 0 && <RangeSlider
                       min={0}
                       max={report.metrics.length - 1}

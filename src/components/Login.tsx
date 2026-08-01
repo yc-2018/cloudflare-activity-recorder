@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { Activity, LockKeyhole } from "lucide-react";
-import { api } from "../lib/api";
+import { api, saveDashboardSession } from "../lib/api";
 
 interface LoginProps {
   onSuccess: () => void;
@@ -16,7 +16,8 @@ export function Login({ onSuccess }: LoginProps) {
     setLoading(true);
     setError("");
     try {
-      await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+      const result = await api<{ session?: string }>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+      if (result.session) saveDashboardSession(result.session);
       onSuccess();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "登录失败");
