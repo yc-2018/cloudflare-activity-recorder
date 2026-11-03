@@ -375,6 +375,45 @@ describe("Worker API", () => {
     expect(await response.json()).toMatchObject({ error: "range_too_large" });
   });
 
+  it("rebuilds the rollup through the admin backfill endpoint", async () => {
+    const device = {
+      id: "rollup-backfill-device", name: "Backfill", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    // Ingest writes rollup already; wipe it to prove the endpoint rebuilds it.
+    await ingest([
+      sample("rollup-backfill-1", "2026-06-25T08:00:00Z", { trigger: "heartbeat", device }),
+      sample("rollup-backfill-2", "2026-06-25T08:03:00Z", { trigger: "heartbeat", device }),
+    ]);
+    await env.DB.prepare("DELETE FROM activity_rollup").run();
+
+    const cookie = await login();
+    const denied = await SELF.fetch(
+      `${BASE}/api/v1/admin/rebuild-rollup?from=2026-06-25T00%3A00%3A00.000Z&to=2026-06-26T00%3A00%3A00.000Z`,
+      { method: "POST" },
+    );
+    expect(denied.status).toBe(401);
+
+    const rebuilt = await SELF.fetch(
+      `${BASE}/api/v1/admin/rebuild-rollup?from=2026-06-25T00%3A00%3A00.000Z&to=2026-06-26T00%3A00%3A00.000Z`,
+      { method: "POST", headers: { cookie } },
+    );
+    expect(rebuilt.status).toBe(200);
+    expect(await rebuilt.json()).toMatchObject({ rebuiltDays: 1 });
+
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM activity_rollup").first<{ n: number }>();
+    expect(Number(count?.n ?? 0)).toBeGreaterThan(0);
+
+    // And the rollup-backed overview now reflects the rebuilt data.
+    const rollupEnv: Env = { ...env, OVERVIEW_ROLLUP: "1" } as Env;
+    const body = await worker.fetch(new Request(
+      `${BASE}/api/v1/overview?granularity=day&from=2026-06-25T00%3A00%3A00.000Z&to=2026-06-26T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie } },
+    ), rollupEnv).then((response) => response.json<{ hasData: boolean; summary: { events: number } }>());
+    expect(body.hasData).toBe(true);
+    expect(body.summary.events).toBe(2);
+  });
+
   it("rejects malformed records without discarding valid records in the batch", async () => {
     const response = await ingest([
       sample("mixed-valid", "2026-07-26T05:00:00Z"),
