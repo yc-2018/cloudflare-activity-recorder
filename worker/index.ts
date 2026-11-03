@@ -294,10 +294,16 @@ async function overview(request: Request, env: Env, url: URL): Promise<Response>
     // The hourly rollup only tiles cleanly into local days for whole-hour
     // offsets; any other offset falls back to the exact scan.
     const useRollup = env.OVERVIEW_ROLLUP === "1" && filters.tzOffset % 60 === 0;
-    const body = useRollup
-      ? await computeOverviewFromRollup(env.DB, filters)
-      : await computeOverview(env.DB, filters);
-    return json(body);
+    if (useRollup) {
+      try {
+        return json(await computeOverviewFromRollup(env.DB, filters));
+      } catch (error) {
+        // The rollup table may not exist yet (migration pending) or be empty;
+        // fall back to the exact scan rather than failing the dashboard.
+        console.error("Rollup overview failed; using exact scan", error);
+      }
+    }
+    return json(await computeOverview(env.DB, filters));
   });
 }
 

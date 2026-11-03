@@ -7,7 +7,7 @@
 	"preview_urls": false,
 	"vars": {
 		"READ_CACHE": "1",
-		"OVERVIEW_ROLLUP": "0"
+		"OVERVIEW_ROLLUP": "1"
 	},
 	"routes": [
 		{
