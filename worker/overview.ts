@@ -6,6 +6,19 @@ import { buildWhere } from "./validation";
  * browser. A sample contributes at most five minutes, and a sample crossing a
  * calendar boundary is split into a second (duration-only) slice so day and
  * month totals remain accurate.
+ *
+ * D1 bills by rows *scanned*, so this function is structured to scan the
+ * selected range as few times as possible:
+ *
+ *  - The expensive CTE chain (`ordered_all` -> `ordered` -> `bucketed` ->
+ *    `slices`) is materialized once and feeds BOTH the per-bucket series and
+ *    the top-application ranking through a single `UNION ALL` query. The
+ *    previous implementation re-ran the whole window function twice (once for
+ *    the series, once for the apps) and paid five correlated subqueries per
+ *    bucket on top of that.
+ *  - The cross-bucket battery/device scalars (which are constant for the whole
+ *    range) are computed once in their own tiny query rather than once per
+ *    bucket.
  */
 export async function computeOverview(db: D1Database, filters: OverviewFilters) {
   // Date.getTimezoneOffset() is UTC - local time. Adding the inverse converts
@@ -96,83 +109,98 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
          AND process_name NOT IN ('LockScreen', 'Desktop')
     )`;
 
-  const sql = `${baseSql},
-    grouped AS (
-      SELECT bucket AS key,
-             MIN(bucket_start) AS start,
-             MAX(bucket_end) AS end,
-             SUM(event_count) AS events,
-             SUM(total_ms) AS total_ms,
-             SUM(switch_count) AS switches,
-             COUNT(DISTINCT device_id) AS device_count,
-             AVG(cpu_percent) AS average_cpu,
-             MAX(cpu_percent) AS maximum_cpu,
-             (SELECT s2.battery_percent FROM slices s2
-               WHERE s2.bucket = slices.bucket AND s2.battery_percent IS NOT NULL
-               ORDER BY s2.observed_at, s2.id LIMIT 1) AS first_battery,
-             (SELECT s3.battery_percent FROM slices s3
-               WHERE s3.bucket = slices.bucket AND s3.battery_percent IS NOT NULL
-               ORDER BY s3.observed_at DESC, s3.id DESC LIMIT 1) AS last_battery,
-             (SELECT s4.battery_percent FROM slices s4
-               WHERE s4.battery_percent IS NOT NULL
-               ORDER BY s4.observed_at, s4.id LIMIT 1) AS global_first_battery,
-             (SELECT s5.battery_percent FROM slices s5
-               WHERE s5.battery_percent IS NOT NULL
-               ORDER BY s5.observed_at DESC, s5.id DESC LIMIT 1) AS global_last_battery,
-             (SELECT COUNT(DISTINCT s6.device_id) FROM slices s6) AS global_device_count
-        FROM slices
-       GROUP BY bucket
-       ORDER BY bucket
-    )
-    SELECT * FROM grouped`;
-
-  const appsSql = `${baseSql}
-    SELECT process_name, SUM(total_ms) AS duration_ms
+  // A single query yields both row shapes so the heavy CTE chain is scanned
+  // once. `row_kind = 'point'` rows are per-bucket aggregates; `row_kind =
+  // 'app'` rows are durations grouped per application for the ranking chart.
+  const sql = `${baseSql}
+    SELECT 'point' AS row_kind,
+           bucket AS key,
+           MIN(bucket_start) AS start,
+           MAX(bucket_end) AS end,
+           SUM(event_count) AS events,
+           SUM(total_ms) AS total_ms,
+           SUM(switch_count) AS switches,
+           COUNT(DISTINCT device_id) AS device_count,
+           AVG(cpu_percent) AS average_cpu,
+           MAX(cpu_percent) AS maximum_cpu,
+           NULL AS process_name,
+           NULL AS duration_ms
+      FROM slices
+     GROUP BY bucket
+    UNION ALL
+    SELECT 'app' AS row_kind,
+           NULL AS key, NULL AS start, NULL AS end,
+           NULL AS events, NULL AS total_ms, NULL AS switches,
+           NULL AS device_count, NULL AS average_cpu, NULL AS maximum_cpu,
+           process_name,
+           SUM(total_ms) AS duration_ms
       FROM slices
      WHERE process_name NOT IN ('LockScreen', 'Desktop')
        AND total_ms > 0
      GROUP BY process_name
-     ORDER BY duration_ms DESC, process_name COLLATE NOCASE
-     LIMIT 10`;
+    ORDER BY row_kind, key`;
 
-  interface RawPoint {
-    key: string;
-    start: number;
-    end: number;
-    events: number;
-    total_ms: number;
-    switches: number;
-    device_count: number;
+  // Cross-bucket battery endpoints and device count are constant for the
+  // range, and only need the raw rows (not the five-minute LEAD expansion).
+  // Computing them off `activity_events` directly avoids re-running the window
+  // function a second time just to read three scalars.
+  const scalarSql = `
+    SELECT
+      (SELECT COUNT(DISTINCT device_id) FROM activity_events e WHERE ${contextWhere.sql}) AS global_device_count,
+      (SELECT battery_percent FROM activity_events e
+        WHERE ${contextWhere.sql} AND battery_percent IS NOT NULL
+        ORDER BY observed_at, id LIMIT 1) AS global_first_battery,
+      (SELECT battery_percent FROM activity_events e
+        WHERE ${contextWhere.sql} AND battery_percent IS NOT NULL
+        ORDER BY observed_at DESC, id DESC LIMIT 1) AS global_last_battery`;
+  const scalarValues = contextWhere.values;
+
+  interface RawRow {
+    row_kind: "point" | "app";
+    key: string | null;
+    start: number | null;
+    end: number | null;
+    events: number | null;
+    total_ms: number | null;
+    switches: number | null;
+    device_count: number | null;
     average_cpu: number | null;
     maximum_cpu: number | null;
-    first_battery: number | null;
-    last_battery: number | null;
+    process_name: string | null;
+    duration_ms: number | null;
+  }
+
+  interface RawScalars {
+    global_device_count: number | null;
     global_first_battery: number | null;
     global_last_battery: number | null;
-    global_device_count: number;
   }
 
-  interface RawApp {
-    process_name: string;
-    duration_ms: number;
-  }
+  const result = await db.prepare(sql).bind(...contextWhere.values, ...activityValues).all<RawRow>();
+  const scalars = await db.prepare(scalarSql)
+    .bind(...scalarValues, ...scalarValues, ...scalarValues)
+    .first<RawScalars>();
+  const allRows = result.results ?? [];
+  const pointRows = allRows.filter((row) => row.row_kind === "point");
+  const appRows = allRows.filter((row) => row.row_kind === "app");
 
-  const result = await db.prepare(sql).bind(...contextWhere.values, ...activityValues).all<RawPoint>();
-  const appResult = await db.prepare(appsSql).bind(...contextWhere.values, ...activityValues).all<RawApp>();
-  const rows = result.results ?? [];
-  const populated: OverviewPoint[] = rows.map((row) => ({
-    key: row.key,
-    start: Number(row.start),
-    end: Number(row.end),
-    events: Number(row.events ?? 0),
-    totalMs: Number(row.total_ms ?? 0),
-    switches: Number(row.switches ?? 0),
-    averageCpu: row.average_cpu === null ? null : Number(Number(row.average_cpu).toFixed(1)),
-    maximumCpu: row.maximum_cpu === null ? null : Number(row.maximum_cpu),
-    batteryDelta: Number(row.device_count) !== 1 || row.first_battery === null || row.last_battery === null
-      ? null
-      : Number((Number(row.last_battery) - Number(row.first_battery)).toFixed(1)),
-  }));
+  const populated: OverviewPoint[] = pointRows.map((row) => {
+    const firstBattery = scalars?.global_first_battery ?? null;
+    const lastBattery = scalars?.global_last_battery ?? null;
+    return {
+      key: row.key!,
+      start: Number(row.start),
+      end: Number(row.end),
+      events: Number(row.events ?? 0),
+      totalMs: Number(row.total_ms ?? 0),
+      switches: Number(row.switches ?? 0),
+      averageCpu: row.average_cpu === null ? null : Number(Number(row.average_cpu).toFixed(1)),
+      maximumCpu: row.maximum_cpu === null ? null : Number(row.maximum_cpu),
+      batteryDelta: Number(row.device_count) !== 1 || firstBattery === null || lastBattery === null
+        ? null
+        : Number((Number(firstBattery) - Number(lastBattery)).toFixed(1)),
+    };
+  });
 
   // Return a stable calendar series, including empty days/months. This keeps
   // the API useful to non-React clients and makes the dashboard's x-axis show
@@ -226,8 +254,14 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
     };
   });
 
-  const first = rows.find((row) => row.global_first_battery !== null);
-  const last = rows.find((row) => row.global_last_battery !== null);
+  const apps = appRows
+    .map((row) => ({ processName: row.process_name!, durationMs: Number(row.duration_ms ?? 0) }))
+    .sort((a, b) => b.durationMs - a.durationMs || a.processName.localeCompare(b.processName, "en", { sensitivity: "base" }))
+    .slice(0, 10);
+
+  const globalDeviceCount = Number(scalars?.global_device_count ?? 0);
+  const globalFirstBattery = scalars?.global_first_battery ?? null;
+  const globalLastBattery = scalars?.global_last_battery ?? null;
   const cpuCount = points.reduce((sum, point) => sum + point.events, 0);
   const weightedCpu = points.reduce(
     (sum, point) => sum + (point.averageCpu === null ? 0 : point.averageCpu * point.events),
@@ -244,18 +278,15 @@ export async function computeOverview(db: D1Database, filters: OverviewFilters) 
     to: filters.to,
     hasData: populated.some((point) => point.events > 0 || point.totalMs > 0),
     points,
-    apps: (appResult.results ?? []).map((row) => ({
-      processName: row.process_name,
-      durationMs: Number(row.duration_ms ?? 0),
-    })),
+    apps,
     summary: {
       totalMs: points.reduce((sum, point) => sum + point.totalMs, 0),
       switches: points.reduce((sum, point) => sum + point.switches, 0),
       events: points.reduce((sum, point) => sum + point.events, 0),
       averageCpu: cpuCount ? Number((weightedCpu / cpuCount).toFixed(1)) : null,
       maximumCpu,
-      batteryDelta: first && last && Number(first.global_device_count) === 1 && first.global_first_battery !== null && last.global_last_battery !== null
-        ? Number((Number(last.global_last_battery) - Number(first.global_first_battery)).toFixed(1))
+      batteryDelta: globalDeviceCount === 1 && globalFirstBattery !== null && globalLastBattery !== null
+        ? Number((Number(globalLastBattery) - Number(globalFirstBattery)).toFixed(1))
         : null,
     },
   };

@@ -5,6 +5,10 @@
 	"compatibility_date": "2025-04-01",
 	"workers_dev": true,
 	"preview_urls": false,
+	"vars": {
+		"READ_CACHE": "1",
+		"OVERVIEW_ROLLUP": "1"
+	},
 	"routes": [
 		{
 			"pattern": "bg.245556.xyz",

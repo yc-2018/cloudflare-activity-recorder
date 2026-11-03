@@ -14,6 +14,7 @@ import {
 import { HttpError, json, methodNotAllowed, readJson, securityHeaders } from "./http";
 import { computeOverview } from "./overview";
 import { computeReport } from "./report";
+import { computeOverviewFromRollup, rebuildRollup, rebuildRollupForTimestamps } from "./rollup";
 import type { ActivityEventPayload, ActivityRow, Env } from "./types";
 import { buildWhere, parseFilters, parseOverviewFilters, validateEvent } from "./validation";
 
@@ -117,6 +118,18 @@ async function ingest(request: Request, env: Env): Promise<Response> {
   const accepted = results
     .slice(insertOffset)
     .reduce((sum, result) => sum + (result.meta.changes ?? 0), 0);
+
+  // Keep the hourly rollup in sync: recompute the affected UTC days from raw
+  // events. Rebuilding (rather than incremental math) keeps late or
+  // out-of-order samples correct, and only touches the handful of days a batch
+  // can span. Failures here must not reject otherwise-valid writes; the read
+  // path falls back to the exact query when the rollup is missing.
+  try {
+    await rebuildRollupForTimestamps(env.DB, valid.map((event) => Date.parse(event.observedAt)));
+  } catch (error) {
+    console.error("Rollup rebuild failed; rows remain queryable via exact path", error);
+  }
+
   return json({
     accepted,
     duplicates: valid.length - accepted,
@@ -208,10 +221,54 @@ async function requireDetailsAccess(request: Request, env: Env): Promise<Respons
   return null;
 }
 
+// Read aggregation results are cached for a short window so that repeated
+// dashboard loads (flipping between filters, re-opening a view, refreshing)
+// do not re-scan the same rows again. The cache key includes the full query
+// string, so each distinct filter combination is cached independently.
+const READ_CACHE_SECONDS = 300;
+
+async function withReadCache(
+  request: Request,
+  env: Env,
+  compute: () => Promise<Response>,
+): Promise<Response> {
+  // Opt-in only: enabled via the READ_CACHE var in production. Keeping it off
+  // by default means tests and preview environments always see fresh data.
+  const cache = env.READ_CACHE === "1" && typeof caches !== "undefined" ? caches.default : undefined;
+  if (!cache) return compute();
+  const cacheKey = new Request(request.url, { method: "GET" });
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    const hit = new Response(cached.body, cached);
+    hit.headers.set("x-cache", "HIT");
+    return hit;
+  }
+  const response = await compute();
+  if (response.status === 200) {
+    const body = await response.clone().text();
+    const stored = new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": `public, max-age=${READ_CACHE_SECONDS}`,
+      },
+    });
+    // Do not await: caching must never delay or fail the response.
+    if (typeof (cache as { put?: unknown }).put === "function") {
+      await cache.put(cacheKey, stored).catch(() => undefined);
+    }
+  }
+  return response;
+}
+
 async function report(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method !== "GET") return methodNotAllowed(["GET"]);
   const denied = await requireDashboardAccess(request, env);
   if (denied) return denied;
+  return withReadCache(request, env, () => computeReportResponse(env, url));
+}
+
+async function computeReportResponse(env: Env, url: URL): Promise<Response> {
   const filters = parseFilters(url);
   const where = buildWhere(filters);
   const result = await env.DB.prepare(
@@ -232,8 +289,16 @@ async function overview(request: Request, env: Env, url: URL): Promise<Response>
   if (request.method !== "GET") return methodNotAllowed(["GET"]);
   const denied = await requireDashboardAccess(request, env);
   if (denied) return denied;
-  const filters = parseOverviewFilters(url);
-  return json(await computeOverview(env.DB, filters));
+  return withReadCache(request, env, async () => {
+    const filters = parseOverviewFilters(url);
+    // The hourly rollup only tiles cleanly into local days for whole-hour
+    // offsets; any other offset falls back to the exact scan.
+    const useRollup = env.OVERVIEW_ROLLUP === "1" && filters.tzOffset % 60 === 0;
+    const body = useRollup
+      ? await computeOverviewFromRollup(env.DB, filters)
+      : await computeOverview(env.DB, filters);
+    return json(body);
+  });
 }
 
 interface Cursor {
@@ -319,6 +384,27 @@ async function filters(request: Request, env: Env): Promise<Response> {
   });
 }
 
+async function rebuildRollupEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  const denied = await requireDashboardAccess(request, env);
+  if (denied) return denied;
+  const from = Date.parse(url.searchParams.get("from") ?? "");
+  const to = Date.parse(url.searchParams.get("to") ?? "");
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
+    throw new HttpError(400, "invalid_range", "from and to must be a valid ascending ISO date range");
+  }
+  const DAY = 86_400_000;
+  // Rebuild one UTC day at a time so each statement stays small and the work is
+  // bounded. Each day is padded so neighbouring samples close intervals and
+  // spill across the day boundary is captured.
+  let rebuilt = 0;
+  for (let start = Math.floor(from / DAY) * DAY; start < to; start += DAY) {
+    await rebuildRollup(env.DB, start - DAY, start + 2 * DAY);
+    rebuilt += 1;
+  }
+  return json({ rebuiltDays: rebuilt });
+}
+
 async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/auth/status") return authStatus(request, env);
   if (url.pathname === "/api/auth/login") return login(request, env);
@@ -330,6 +416,7 @@ async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/v1/report") return report(request, env, url);
   if (url.pathname === "/api/v1/overview") return overview(request, env, url);
   if (url.pathname === "/api/v1/filters") return filters(request, env);
+  if (url.pathname === "/api/v1/admin/rebuild-rollup") return rebuildRollupEndpoint(request, env, url);
   return json({ error: "not_found", message: "API route not found" }, 404);
 }
 

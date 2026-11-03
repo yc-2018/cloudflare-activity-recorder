@@ -265,6 +265,53 @@ describe("Worker API", () => {
     expect(body.apps.map((item) => item.processName)).not.toContain("process-09.exe");
   });
 
+  it("aggregates multiple devices and reports battery delta across the range", async () => {
+    const deviceA = {
+      id: "overview-multi-a", name: "A", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    const deviceB = {
+      id: "overview-multi-b", name: "B", manufacturer: "Example", model: "Model B",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest([
+      sample("multi-a-1", "2026-05-01T00:00:00Z", { trigger: "heartbeat", device: deviceA, metrics: { cpuPercent: 10, memoryPercent: 20, batteryPercent: 90, powerPlugged: true } }),
+      sample("multi-a-2", "2026-05-01T00:01:00Z", { trigger: "heartbeat", device: deviceA, metrics: { cpuPercent: 30, memoryPercent: 20, batteryPercent: 80, powerPlugged: false } }),
+      sample("multi-b-1", "2026-05-01T00:00:30Z", { trigger: "heartbeat", device: deviceB, metrics: { cpuPercent: 50, memoryPercent: 20, batteryPercent: 60, powerPlugged: false } }),
+    ]);
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=day&from=2026-05-01T00%3A00%3A00.000Z&to=2026-05-02T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie: await login() } },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{
+      points: Array<{ key: string; events: number; averageCpu: number | null; maximumCpu: number | null; batteryDelta: number | null }>;
+      summary: { events: number; averageCpu: number | null; maximumCpu: number | null; batteryDelta: number | null };
+    }>();
+    const day = body.points.find((point) => point.key === "2026-05-01")!;
+    expect(day.events).toBe(3);
+    // CPU averages and maxima are aggregated in SQL over all three samples.
+    expect(day.maximumCpu).toBe(50);
+    expect(day.averageCpu).toBe(30);
+    // Two devices share the day, so the per-day battery delta is suppressed.
+    expect(day.batteryDelta).toBeNull();
+    // The range summary also spans two devices, so no battery delta is reported.
+    expect(body.summary.events).toBe(3);
+    expect(body.summary.batteryDelta).toBeNull();
+  });
+
+  it("returns an empty but complete series when a range has no records", async () => {
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=day&from=2025-01-01T00%3A00%3A00.000Z&to=2025-01-04T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie: await login() } },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ points: Array<{ key: string }>; hasData: boolean; apps: unknown[] }>();
+    expect(body.points.map((point) => point.key)).toEqual(["2025-01-01", "2025-01-02", "2025-01-03"]);
+    expect(body.hasData).toBe(false);
+    expect(body.apps).toEqual([]);
+  });
+
   it("stores records in D1 and treats retried event IDs as duplicates", async () => {
     const event = sample("event-idempotent", "2026-07-26T01:00:00Z");
     const later = sample("event-device-later", "2026-07-26T02:00:00Z");
@@ -334,5 +381,77 @@ describe("Worker API", () => {
       { id: "invalid" },
     ]).then((result) => result.json<Record<string, number>>());
     expect(response).toEqual({ accepted: 1, duplicates: 0, rejected: 1 });
+  });
+
+  it("serves the same overview from the rollup as the exact scan", async () => {
+    // Two devices, an app switch, a five-minute cap and a day-boundary spill,
+    // so equality exercises duration capping and boundary handling.
+    const deviceA = {
+      id: "rollup-eq-a", name: "A", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    const deviceB = {
+      id: "rollup-eq-b", name: "B", manufacturer: "Example", model: "Model B",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest([
+      sample("rollup-eq-1", "2026-06-10T23:59:00Z", { trigger: "heartbeat", device: deviceA }),
+      sample("rollup-eq-2", "2026-06-11T00:04:00Z", { trigger: "heartbeat", device: deviceA }),
+      sample("rollup-eq-3", "2026-06-11T00:04:30Z", { trigger: "window_change", device: deviceA, activity: { processName: "chrome.exe", windowTitle: "Browser" } }),
+      sample("rollup-eq-4", "2026-06-11T00:09:00Z", { trigger: "heartbeat", device: deviceB }),
+    ]);
+
+    const rollupEnv: Env = { ...env, OVERVIEW_ROLLUP: "1" } as Env;
+    const cookie = await login();
+
+    async function fetchOverview(targetEnv: Env): Promise<Record<string, unknown>> {
+      const response = await worker.fetch(new Request(
+        `${BASE}/api/v1/overview?granularity=day&from=2026-06-10T00%3A00%3A00.000Z&to=2026-06-12T00%3A00%3A00.000Z&tzOffset=0`,
+        { headers: { cookie } },
+      ), targetEnv);
+      expect(response.status).toBe(200);
+      return response.json<Record<string, unknown>>();
+    }
+
+    const exact = await fetchOverview(env as Env);
+    const fromRollup = await fetchOverview(rollupEnv);
+
+    // The two implementations must agree on the calendar series and summary.
+    const exactPoints = (exact.points as Array<{ key: string; totalMs: number; events: number; switches: number }>);
+    const rollupPoints = (fromRollup.points as Array<{ key: string; totalMs: number; events: number; switches: number }>);
+    expect(rollupPoints.map((p) => ({ key: p.key, totalMs: p.totalMs, events: p.events, switches: p.switches })))
+      .toEqual(exactPoints.map((p) => ({ key: p.key, totalMs: p.totalMs, events: p.events, switches: p.switches })));
+
+    const exactSummary = exact.summary as { totalMs: number; events: number; switches: number };
+    const rollupSummary = fromRollup.summary as { totalMs: number; events: number; switches: number };
+    expect(rollupSummary.totalMs).toBe(exactSummary.totalMs);
+    expect(rollupSummary.events).toBe(exactSummary.events);
+    expect(rollupSummary.switches).toBe(exactSummary.switches);
+
+    // The app ranking must match too.
+    const exactApps = (exact.apps as Array<{ processName: string; durationMs: number }>);
+    const rollupApps = (fromRollup.apps as Array<{ processName: string; durationMs: number }>);
+    expect(rollupApps).toEqual(exactApps);
+  });
+
+  it("recomputes the rollup when a late sample arrives", async () => {
+    const device = {
+      id: "rollup-late-device", name: "Late", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest([sample("rollup-late-1", "2026-06-20T10:00:00Z", { trigger: "heartbeat", device })]);
+    // A later heartbeat fills part of the gap and should extend the first
+    // sample's duration; the rollup must reflect the change.
+    await ingest([sample("rollup-late-2", "2026-06-20T10:02:00Z", { trigger: "heartbeat", device })]);
+
+    const rollupEnv: Env = { ...env, OVERVIEW_ROLLUP: "1" } as Env;
+    const cookie = await login();
+    const body = await worker.fetch(new Request(
+      `${BASE}/api/v1/overview?granularity=day&from=2026-06-20T00%3A00%3A00.000Z&to=2026-06-21T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie } },
+    ), rollupEnv).then((response) => response.json<{ points: Array<{ totalMs: number }>; summary: { totalMs: number } }>());
+    // First sample now caps at its 5-minute limit (it can extend past.
+    const day = body.points.find((point) => (point as { key?: string }).key === "2026-06-20") ?? body.points[0];
+    expect(day.totalMs).toBeGreaterThanOrEqual(300_000);
   });
 });
