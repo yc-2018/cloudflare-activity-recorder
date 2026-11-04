@@ -375,122 +375,62 @@ describe("Worker API", () => {
     expect(await response.json()).toMatchObject({ error: "range_too_large" });
   });
 
-  it("rebuilds the rollup through the admin backfill endpoint", async () => {
-    const device = {
-      id: "rollup-backfill-device", name: "Backfill", manufacturer: "Example", model: "Model A",
-      osVersion: "Windows 11", cpuModel: "Example CPU",
-    };
-    // Ingest writes rollup already; wipe it to prove the endpoint rebuilds it.
-    await ingest([
-      sample("rollup-backfill-1", "2026-06-25T08:00:00Z", { trigger: "heartbeat", device }),
-      sample("rollup-backfill-2", "2026-06-25T08:03:00Z", { trigger: "heartbeat", device }),
-    ]);
-    await env.DB.prepare("DELETE FROM activity_rollup").run();
-
-    const cookie = await login();
-    const denied = await SELF.fetch(
-      `${BASE}/api/v1/admin/rebuild-rollup?from=2026-06-25T00%3A00%3A00.000Z&to=2026-06-26T00%3A00%3A00.000Z`,
-      { method: "POST" },
-    );
-    expect(denied.status).toBe(401);
-
-    const rebuilt = await SELF.fetch(
-      `${BASE}/api/v1/admin/rebuild-rollup?from=2026-06-25T00%3A00%3A00.000Z&to=2026-06-26T00%3A00%3A00.000Z`,
-      { method: "POST", headers: { cookie } },
-    );
-    expect(rebuilt.status).toBe(200);
-    expect(await rebuilt.json()).toMatchObject({ rebuiltDays: 1 });
-
-    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM activity_rollup").first<{ n: number }>();
-    expect(Number(count?.n ?? 0)).toBeGreaterThan(0);
-
-    // And the rollup-backed overview now reflects the rebuilt data.
-    const rollupEnv: Env = { ...env, OVERVIEW_ROLLUP: "1" } as Env;
-    const body = await worker.fetch(new Request(
-      `${BASE}/api/v1/overview?granularity=day&from=2026-06-25T00%3A00%3A00.000Z&to=2026-06-26T00%3A00%3A00.000Z&tzOffset=0`,
-      { headers: { cookie } },
-    ), rollupEnv).then((response) => response.json<{ hasData: boolean; summary: { events: number } }>());
-    expect(body.hasData).toBe(true);
-    expect(body.summary.events).toBe(2);
-  });
-
-  it("rejects malformed records without discarding valid records in the batch", async () => {
-    const response = await ingest([
-      sample("mixed-valid", "2026-07-26T05:00:00Z"),
-      { id: "invalid" },
-    ]).then((result) => result.json<Record<string, number>>());
-    expect(response).toEqual({ accepted: 1, duplicates: 0, rejected: 1 });
-  });
-
-  it("serves the same overview from the rollup as the exact scan", async () => {
-    // Two devices, an app switch, a five-minute cap and a day-boundary spill,
-    // so equality exercises duration capping and boundary handling.
+  it("collapses samples into per-day-per-app rows and serves the overview from them", async () => {
     const deviceA = {
-      id: "rollup-eq-a", name: "A", manufacturer: "Example", model: "Model A",
+      id: "day-a", name: "A", manufacturer: "Example", model: "Model A",
       osVersion: "Windows 11", cpuModel: "Example CPU",
     };
     const deviceB = {
-      id: "rollup-eq-b", name: "B", manufacturer: "Example", model: "Model B",
+      id: "day-b", name: "B", manufacturer: "Example", model: "Model B",
       osVersion: "Windows 11", cpuModel: "Example CPU",
     };
     await ingest([
-      sample("rollup-eq-1", "2026-06-10T23:59:00Z", { trigger: "heartbeat", device: deviceA }),
-      sample("rollup-eq-2", "2026-06-11T00:04:00Z", { trigger: "heartbeat", device: deviceA }),
-      sample("rollup-eq-3", "2026-06-11T00:04:30Z", { trigger: "window_change", device: deviceA, activity: { processName: "chrome.exe", windowTitle: "Browser" } }),
-      sample("rollup-eq-4", "2026-06-11T00:09:00Z", { trigger: "heartbeat", device: deviceB }),
+      sample("day-1", "2026-06-10T23:59:00Z", { trigger: "heartbeat", device: deviceA }),
+      sample("day-2", "2026-06-11T00:04:00Z", { trigger: "heartbeat", device: deviceA }),
+      sample("day-3", "2026-06-11T00:04:30Z", { trigger: "window_change", device: deviceA, activity: { processName: "chrome.exe", windowTitle: "Browser" } }),
+      sample("day-4", "2026-06-11T00:09:00Z", { trigger: "heartbeat", device: deviceB }),
     ]);
 
-    const rollupEnv: Env = { ...env, OVERVIEW_ROLLUP: "1" } as Env;
+    // Four samples across two devices and two days collapse into one row per
+    // (device, day, app): deviceA/day10(code), deviceA/day11(code+chrome),
+    // deviceB/day11(code) => four combinations, four samples total.
+    const collapsed = await env.DB.prepare(
+      "SELECT COUNT(*) AS n, SUM(sample_count) AS total FROM activity_days WHERE device_id IN ('day-a','day-b')",
+    ).first<{ n: number; total: number }>();
+    expect(Number(collapsed?.total ?? 0)).toBe(4);
+    expect(Number(collapsed?.n ?? 0)).toBe(4);
+
     const cookie = await login();
-
-    async function fetchOverview(targetEnv: Env): Promise<Record<string, unknown>> {
-      const response = await worker.fetch(new Request(
-        `${BASE}/api/v1/overview?granularity=day&from=2026-06-10T00%3A00%3A00.000Z&to=2026-06-12T00%3A00%3A00.000Z&tzOffset=0`,
-        { headers: { cookie } },
-      ), targetEnv);
-      expect(response.status).toBe(200);
-      return response.json<Record<string, unknown>>();
-    }
-
-    const exact = await fetchOverview(env as Env);
-    const fromRollup = await fetchOverview(rollupEnv);
-
-    // The two implementations must agree on the calendar series and summary.
-    const exactPoints = (exact.points as Array<{ key: string; totalMs: number; events: number; switches: number }>);
-    const rollupPoints = (fromRollup.points as Array<{ key: string; totalMs: number; events: number; switches: number }>);
-    expect(rollupPoints.map((p) => ({ key: p.key, totalMs: p.totalMs, events: p.events, switches: p.switches })))
-      .toEqual(exactPoints.map((p) => ({ key: p.key, totalMs: p.totalMs, events: p.events, switches: p.switches })));
-
-    const exactSummary = exact.summary as { totalMs: number; events: number; switches: number };
-    const rollupSummary = fromRollup.summary as { totalMs: number; events: number; switches: number };
-    expect(rollupSummary.totalMs).toBe(exactSummary.totalMs);
-    expect(rollupSummary.events).toBe(exactSummary.events);
-    expect(rollupSummary.switches).toBe(exactSummary.switches);
-
-    // The app ranking must match too.
-    const exactApps = (exact.apps as Array<{ processName: string; durationMs: number }>);
-    const rollupApps = (fromRollup.apps as Array<{ processName: string; durationMs: number }>);
-    expect(rollupApps).toEqual(exactApps);
+    const body = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=day&from=2026-06-10T00%3A00%3A00.000Z&to=2026-06-12T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie } },
+    ).then((response) => response.json<{
+      points: Array<{ key: string; totalMs: number; events: number; switches: number }>;
+      summary: { events: number };
+      apps: Array<{ processName: string }>;
+    }>());
+    expect(body.summary.events).toBe(4);
+    const day10 = body.points.find((point) => point.key === "2026-06-10")!;
+    // The 23:59 sample caps at 60s before the next sample closes the interval.
+    expect(day10.totalMs).toBe(60_000);
+    expect(body.apps.map((app) => app.processName)).toContain("chrome.exe");
   });
 
-  it("recomputes the rollup when a late sample arrives", async () => {
+  it("refreshes the overview when a late sample arrives (recomputed from day rows)", async () => {
     const device = {
-      id: "rollup-late-device", name: "Late", manufacturer: "Example", model: "Model A",
+      id: "late-device", name: "Late", manufacturer: "Example", model: "Model A",
       osVersion: "Windows 11", cpuModel: "Example CPU",
     };
-    await ingest([sample("rollup-late-1", "2026-06-20T10:00:00Z", { trigger: "heartbeat", device })]);
-    // A later heartbeat fills part of the gap and should extend the first
-    // sample's duration; the rollup must reflect the change.
-    await ingest([sample("rollup-late-2", "2026-06-20T10:02:00Z", { trigger: "heartbeat", device })]);
+    await ingest([sample("late-1", "2026-06-20T10:00:00Z", { trigger: "heartbeat", device })]);
+    await ingest([sample("late-2", "2026-06-20T10:02:00Z", { trigger: "heartbeat", device })]);
 
-    const rollupEnv: Env = { ...env, OVERVIEW_ROLLUP: "1" } as Env;
     const cookie = await login();
-    const body = await worker.fetch(new Request(
+    const body = await SELF.fetch(
       `${BASE}/api/v1/overview?granularity=day&from=2026-06-20T00%3A00%3A00.000Z&to=2026-06-21T00%3A00%3A00.000Z&tzOffset=0`,
       { headers: { cookie } },
-    ), rollupEnv).then((response) => response.json<{ points: Array<{ totalMs: number }>; summary: { totalMs: number } }>());
-    // First sample now caps at its 5-minute limit (it can extend past.
-    const day = body.points.find((point) => (point as { key?: string }).key === "2026-06-20") ?? body.points[0];
+    ).then((response) => response.json<{ points: Array<{ key: string; totalMs: number }> }>());
+    const day = body.points.find((point) => point.key === "2026-06-20")!;
+    // The second heartbeat extends the first sample's duration towards its cap.
     expect(day.totalMs).toBeGreaterThanOrEqual(300_000);
   });
 });

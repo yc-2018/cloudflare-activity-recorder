@@ -7,8 +7,6 @@ export interface Env {
   SESSION_SECRET?: string;
   /** Set to "1" in production to enable the short-lived read result cache. */
   READ_CACHE?: string;
-  /** Set to "1" to serve month/year overviews from the pre-aggregated rollup. */
-  OVERVIEW_ROLLUP?: string;
 }
 
 export interface DevicePayload {

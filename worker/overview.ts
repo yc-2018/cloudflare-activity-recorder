@@ -56,6 +56,14 @@ export function computeOverviewFromEvents(events: StoredEvent[], filters: Overvi
 
   const appDuration = new Map<string, number>();
 
+  // A sample contributes to the result only if it matches the app/title filter,
+  // but neighbours for interval capping always come from the full list.
+  const matchesActivity = (event: StoredEvent): boolean => {
+    if (filters.app && event.processName !== filters.app) return false;
+    if (filters.query && !event.windowTitle.toLowerCase().includes(filters.query.toLowerCase())) return false;
+    return true;
+  };
+
   const byDevice = new Map<string, StoredEvent[]>();
   for (const event of events) {
     if (event.observedAt < filters.from || event.observedAt >= filters.to) continue;
@@ -69,6 +77,7 @@ export function computeOverviewFromEvents(events: StoredEvent[], filters: Overvi
     for (let i = 0; i < list.length; i += 1) {
       const event = list[i];
       const next = list[i + 1];
+      if (!matchesActivity(event)) continue;
       const passive = event.processName === "LockScreen" || event.processName === "Desktop";
       const rawEnd = passive
         ? event.observedAt

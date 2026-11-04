@@ -14,7 +14,6 @@ import {
 import { HttpError, json, methodNotAllowed, readJson, securityHeaders } from "./http";
 import { computeOverviewFromEvents } from "./overview";
 import { computeReport } from "./report";
-import { computeOverviewFromRollup, rebuildRollupForRange, rebuildRollupForTimestamps } from "./rollup";
 import {
   decodeSamples,
   encodeSample,
@@ -199,15 +198,6 @@ async function ingest(request: Request, env: Env): Promise<Response> {
   // one write per sample.
   const accepted = await mergeSamples(env.DB, valid);
 
-  // Keep the hourly rollup in sync for month/year views. Rebuild from the
-  // collapsed rows of the affected days. Failures here must not reject
-  // otherwise-valid writes; the read path falls back to the exact query.
-  try {
-    await rebuildRollupForTimestamps(env.DB, valid.map((event) => Date.parse(event.observedAt)));
-  } catch (error) {
-    console.error("Rollup rebuild failed; rows remain queryable via exact path", error);
-  }
-
   return json({
     accepted,
     duplicates: valid.length - accepted,
@@ -374,19 +364,12 @@ async function overview(request: Request, env: Env, url: URL): Promise<Response>
   if (denied) return denied;
   return withReadCache(request, env, async () => {
     const filters = parseOverviewFilters(url);
-    // The hourly rollup only tiles cleanly into local days for whole-hour
-    // offsets; any other offset falls back to the exact scan.
-    const useRollup = env.OVERVIEW_ROLLUP === "1" && filters.tzOffset % 60 === 0;
-    if (useRollup) {
-      try {
-        return json(await computeOverviewFromRollup(env.DB, filters));
-      } catch (error) {
-        // The rollup table may not exist yet (migration pending) or be empty;
-        // fall back to the exact scan rather than failing the dashboard.
-        console.error("Rollup overview failed; using exact scan", error);
-      }
-    }
-    return json(computeOverviewFromEvents(await readEventsForRange(env.DB, filters), filters));
+    // Month/year overviews are computed directly from the collapsed day rows.
+    // Read the full device range (no app/title filter) so each sample's duration
+    // is measured against its true neighbouring sample; the app/title filters
+    // are applied inside the computation, matching the original semantics.
+    const events = await readEventsForRange(env.DB, filters, { applyActivityFilters: false });
+    return json(computeOverviewFromEvents(events, filters));
   });
 }
 
@@ -468,19 +451,6 @@ async function filters(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function rebuildRollupEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
-  if (request.method !== "POST") return methodNotAllowed(["POST"]);
-  const denied = await requireDashboardAccess(request, env);
-  if (denied) return denied;
-  const from = Date.parse(url.searchParams.get("from") ?? "");
-  const to = Date.parse(url.searchParams.get("to") ?? "");
-  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
-    throw new HttpError(400, "invalid_range", "from and to must be a valid ascending ISO date range");
-  }
-  const rebuiltDays = await rebuildRollupForRange(env.DB, from, to);
-  return json({ rebuiltDays });
-}
-
 async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/auth/status") return authStatus(request, env);
   if (url.pathname === "/api/auth/login") return login(request, env);
@@ -492,7 +462,6 @@ async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/v1/report") return report(request, env, url);
   if (url.pathname === "/api/v1/overview") return overview(request, env, url);
   if (url.pathname === "/api/v1/filters") return filters(request, env);
-  if (url.pathname === "/api/v1/admin/rebuild-rollup") return rebuildRollupEndpoint(request, env, url);
   return json({ error: "not_found", message: "API route not found" }, 404);
 }
 

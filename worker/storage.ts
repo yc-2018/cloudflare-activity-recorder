@@ -118,7 +118,9 @@ interface DayRow {
 export async function readEventsForRange(
   db: D1Database,
   filters: QueryFilters,
+  options: { applyActivityFilters?: boolean } = {},
 ): Promise<StoredEvent[]> {
+  const applyActivity = options.applyActivityFilters !== false;
   const dayFrom = utcDay(filters.from);
   // `to` is exclusive; include the day that contains the last millisecond.
   const dayTo = utcDay(filters.to - 1);
@@ -128,7 +130,7 @@ export async function readEventsForRange(
     clauses.push("a.device_id = ?");
     values.push(filters.deviceId);
   }
-  if (filters.app) {
+  if (applyActivity && filters.app) {
     clauses.push("a.process_name = ?");
     values.push(filters.app);
   }
@@ -148,7 +150,7 @@ export async function readEventsForRange(
   }
   // Clamp to the exact requested window, then apply the title search (which is
   // not expressible against the JSON column in SQL).
-  const query = filters.query;
+  const query = applyActivity ? filters.query : undefined;
   return events.filter((event) => {
     if (event.observedAt < filters.from || event.observedAt >= filters.to) return false;
     if (query && !event.windowTitle.toLowerCase().includes(query.toLowerCase())) return false;
