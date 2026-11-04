@@ -12,16 +12,119 @@ import {
   secretEquals,
 } from "./auth";
 import { HttpError, json, methodNotAllowed, readJson, securityHeaders } from "./http";
-import { computeOverview } from "./overview";
+import { computeOverviewFromEvents } from "./overview";
 import { computeReport } from "./report";
-import { computeOverviewFromRollup, rebuildRollup, rebuildRollupForTimestamps } from "./rollup";
+import { computeOverviewFromRollup, rebuildRollupForRange, rebuildRollupForTimestamps } from "./rollup";
+import {
+  decodeSamples,
+  encodeSample,
+  readEventsForRange,
+  toActivityRow,
+  utcDay,
+  type SampleTuple,
+  type StoredEvent,
+} from "./storage";
 import type { ActivityEventPayload, ActivityRow, Env } from "./types";
-import { buildWhere, parseFilters, parseOverviewFilters, validateEvent } from "./validation";
+import { parseFilters, parseOverviewFilters, validateEvent } from "./validation";
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+/**
+ * Merge validated events into the collapsed activity_days table. Events are
+ * grouped by (device, UTC day, application) so each affected key costs one read
+ * plus one upsert instead of one write per sample. Existing samples with the
+ * same id are treated as duplicates and skipped.
+ *
+ * Returns the number of newly accepted samples (duplicates excluded).
+ */
+async function mergeSamples(db: D1Database, valid: ActivityEventPayload[]): Promise<number> {
+  interface Group {
+    deviceId: string;
+    day: number;
+    process: string;
+    incoming: StoredEvent[];
+  }
+  const groups = new Map<string, Group>();
+  for (const event of valid) {
+    const observedAt = Date.parse(event.observedAt);
+    const day = utcDay(observedAt);
+    const key = `${event.device.id}\u0000${day}\u0000${event.activity.processName}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { deviceId: event.device.id, day, process: event.activity.processName, incoming: [] };
+      groups.set(key, group);
+    }
+    group.incoming.push({
+      id: event.id,
+      deviceId: event.device.id,
+      observedAt,
+      processName: event.activity.processName,
+      windowTitle: event.activity.windowTitle,
+      cpuPercent: event.metrics.cpuPercent,
+      memoryPercent: event.metrics.memoryPercent,
+      batteryPercent: event.metrics.batteryPercent,
+      powerPlugged: event.metrics.powerPlugged,
+      trigger: event.trigger,
+    });
+  }
+
+  if (groups.size === 0) return 0;
+
+  // Read the existing JSON blobs for all affected keys in one query.
+  const keyClauses: string[] = [];
+  const keyValues: unknown[] = [];
+  for (const group of groups.values()) {
+    keyClauses.push("(device_id = ? AND day_utc = ? AND process_name = ?)");
+    keyValues.push(group.deviceId, group.day, group.process);
+  }
+  const existing = await db
+    .prepare(`SELECT device_id, day_utc, process_name, samples FROM activity_days WHERE ${keyClauses.join(" OR ")}`)
+    .bind(...keyValues)
+    .all<{ device_id: string; day_utc: number; process_name: string; samples: string }>();
+  const existingByKey = new Map<string, string>();
+  for (const row of existing.results ?? []) {
+    existingByKey.set(`${row.device_id}\u0000${row.day_utc}\u0000${row.process_name}`, row.samples);
+  }
+
+  const statements: D1PreparedStatement[] = [];
+  let accepted = 0;
+  for (const [key, group] of groups) {
+    const seen = new Set<string>();
+    const merged: SampleTuple[] = [];
+    // Preserve already-stored samples (they are authoritative for dedup) ...
+    for (const prior of decodeSamples(group.deviceId, group.process, existingByKey.get(key) ?? null)) {
+      if (seen.has(prior.id)) continue;
+      seen.add(prior.id);
+      merged.push(encodeSample(prior));
+    }
+    // ... then append genuinely new samples from this batch.
+    for (const event of group.incoming) {
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      merged.push(encodeSample(event));
+      accepted += 1;
+    }
+    // Keep samples ordered by time so the decoder can replay a timeline.
+    merged.sort((a, b) => a[0] - b[0] || String(a[7]).localeCompare(String(b[7])));
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO activity_days (device_id, day_utc, process_name, sample_count, samples)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(device_id, day_utc, process_name) DO UPDATE SET
+             sample_count = excluded.sample_count,
+             samples = excluded.samples`,
+        )
+        .bind(group.deviceId, group.day, group.process, merged.length, JSON.stringify(merged)),
+    );
+  }
+
+  await db.batch(statements);
+  return accepted;
 }
 
 async function ingest(request: Request, env: Env): Promise<Response> {
@@ -89,41 +192,16 @@ async function ingest(request: Request, env: Env): Promise<Response> {
     );
   }
 
-  const insertOffset = statements.length;
-  const receivedAt = Date.now();
-  for (const event of valid) {
-    statements.push(
-      env.DB.prepare(
-        `INSERT OR IGNORE INTO activity_events
-          (id, device_id, observed_at, process_name, window_title, cpu_percent,
-           memory_percent, battery_percent, power_plugged, trigger, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        event.id,
-        event.device.id,
-        Date.parse(event.observedAt),
-        event.activity.processName,
-        event.activity.windowTitle,
-        event.metrics.cpuPercent,
-        event.metrics.memoryPercent,
-        event.metrics.batteryPercent,
-        event.metrics.powerPlugged === null ? null : Number(event.metrics.powerPlugged),
-        event.trigger,
-        receivedAt,
-      ),
-    );
-  }
+  await env.DB.batch(statements);
 
-  const results = await env.DB.batch(statements);
-  const accepted = results
-    .slice(insertOffset)
-    .reduce((sum, result) => sum + (result.meta.changes ?? 0), 0);
+  // Merge the incoming samples into the per-(device, UTC day, application) JSON
+  // blobs. Grouping first means one read + upsert per affected key rather than
+  // one write per sample.
+  const accepted = await mergeSamples(env.DB, valid);
 
-  // Keep the hourly rollup in sync: recompute the affected UTC days from raw
-  // events. Rebuilding (rather than incremental math) keeps late or
-  // out-of-order samples correct, and only touches the handful of days a batch
-  // can span. Failures here must not reject otherwise-valid writes; the read
-  // path falls back to the exact query when the rollup is missing.
+  // Keep the hourly rollup in sync for month/year views. Rebuild from the
+  // collapsed rows of the affected days. Failures here must not reject
+  // otherwise-valid writes; the read path falls back to the exact query.
   try {
     await rebuildRollupForTimestamps(env.DB, valid.map((event) => Date.parse(event.observedAt)));
   } catch (error) {
@@ -270,19 +348,24 @@ async function report(request: Request, env: Env, url: URL): Promise<Response> {
 
 async function computeReportResponse(env: Env, url: URL): Promise<Response> {
   const filters = parseFilters(url);
-  const where = buildWhere(filters);
-  const result = await env.DB.prepare(
-    `SELECT e.id, e.device_id, d.name AS device_name, e.observed_at,
-            e.process_name, e.window_title, e.cpu_percent, e.memory_percent,
-            e.battery_percent, e.power_plugged, e.trigger
-       FROM activity_events e
-       JOIN devices d ON d.id = e.device_id
-      WHERE ${where.sql}
-      ORDER BY e.device_id, e.observed_at, e.id
-      LIMIT 20001`,
-  ).bind(...where.values).all<ActivityRow>();
-  const rows = result.results.slice(0, 20_000);
-  return json(computeReport(rows, filters, result.results.length > 20_000));
+  const events = await readEventsForRange(env.DB, filters);
+  const rows = await withDeviceNames(env, events);
+  const truncated = rows.length > 20_000;
+  return json(computeReport(rows.slice(0, 20_000), filters, truncated));
+}
+
+/**
+ * Read day rows, decode to flat events, and attach device names. Sorted by
+ * device then observed_at then id to match the previous SQL ordering.
+ */
+async function withDeviceNames(env: Env, events: StoredEvent[]): Promise<ActivityRow[]> {
+  if (events.length === 0) return [];
+  const devices = await env.DB.prepare("SELECT id, name FROM devices").all<{ id: string; name: string }>();
+  const names = new Map((devices.results ?? []).map((row) => [row.id, row.name]));
+  const rows = events.map((event) => toActivityRow(event, names.get(event.deviceId) ?? ""));
+  rows.sort((a, b) =>
+    a.device_id.localeCompare(b.device_id) || a.observed_at - b.observed_at || a.id.localeCompare(b.id));
+  return rows;
 }
 
 async function overview(request: Request, env: Env, url: URL): Promise<Response> {
@@ -303,7 +386,7 @@ async function overview(request: Request, env: Env, url: URL): Promise<Response>
         console.error("Rollup overview failed; using exact scan", error);
       }
     }
-    return json(await computeOverview(env.DB, filters));
+    return json(computeOverviewFromEvents(await readEventsForRange(env.DB, filters), filters));
   });
 }
 
@@ -337,42 +420,37 @@ async function events(request: Request, env: Env, url: URL): Promise<Response> {
   const detailsDenied = await requireDetailsAccess(request, env);
   if (detailsDenied) return detailsDenied;
   const filters = parseFilters(url);
-  const where = buildWhere(filters);
   const cursor = decodeCursor(url.searchParams.get("cursor"));
   const requestedLimit = Number(url.searchParams.get("limit") ?? "50");
   const limit = Number.isInteger(requestedLimit) ? Math.min(100, Math.max(10, requestedLimit)) : 50;
-  if (cursor) {
-    where.sql += " AND (e.observed_at < ? OR (e.observed_at = ? AND e.id < ?))";
-    where.values.push(cursor.at, cursor.at, cursor.id);
-  }
-  const result = await env.DB.prepare(
-    `SELECT e.id, e.device_id, d.name AS device_name, e.observed_at,
-            e.process_name, e.window_title, e.cpu_percent, e.memory_percent,
-            e.battery_percent, e.power_plugged, e.trigger
-       FROM activity_events e
-       JOIN devices d ON d.id = e.device_id
-      WHERE ${where.sql}
-      ORDER BY e.observed_at DESC, e.id DESC
-      LIMIT ?`,
-  ).bind(...where.values, limit + 1).all<ActivityRow>();
-  const hasMore = result.results.length > limit;
-  const page = result.results.slice(0, limit);
+
+  const stored = await readEventsForRange(env.DB, filters);
+  const devices = await env.DB.prepare("SELECT id, name FROM devices").all<{ id: string; name: string }>();
+  const names = new Map((devices.results ?? []).map((row) => [row.id, row.name]));
+
+  // Newest first, matching the previous DESC ordering, id as tie-breaker.
+  stored.sort((a, b) => b.observedAt - a.observedAt || b.id.localeCompare(a.id));
+  const filtered = cursor
+    ? stored.filter((event) => event.observedAt < cursor.at || (event.observedAt === cursor.at && event.id < cursor.id))
+    : stored;
+  const page = filtered.slice(0, limit);
+  const hasMore = filtered.length > limit;
   const last = page.at(-1);
   return json({
-    items: page.map((row) => ({
-      id: row.id,
-      deviceId: row.device_id,
-      deviceName: row.device_name,
-      observedAt: row.observed_at,
-      processName: row.process_name,
-      windowTitle: row.window_title,
-      cpuPercent: row.cpu_percent,
-      memoryPercent: row.memory_percent,
-      batteryPercent: row.battery_percent,
-      powerPlugged: row.power_plugged === null ? null : Boolean(row.power_plugged),
-      trigger: row.trigger,
+    items: page.map((event) => ({
+      id: event.id,
+      deviceId: event.deviceId,
+      deviceName: names.get(event.deviceId) ?? "",
+      observedAt: event.observedAt,
+      processName: event.processName,
+      windowTitle: event.windowTitle,
+      cpuPercent: event.cpuPercent,
+      memoryPercent: event.memoryPercent,
+      batteryPercent: event.batteryPercent,
+      powerPlugged: event.powerPlugged,
+      trigger: event.trigger,
     })),
-    nextCursor: hasMore && last ? encodeCursor({ at: last.observed_at, id: last.id }) : null,
+    nextCursor: hasMore && last ? encodeCursor({ at: last.observedAt, id: last.id }) : null,
   });
 }
 
@@ -382,7 +460,7 @@ async function filters(request: Request, env: Env): Promise<Response> {
   if (denied) return denied;
   const [devices, apps] = await env.DB.batch([
     env.DB.prepare("SELECT id, name, manufacturer, model FROM devices ORDER BY name COLLATE NOCASE"),
-    env.DB.prepare("SELECT DISTINCT process_name FROM activity_events ORDER BY process_name COLLATE NOCASE"),
+    env.DB.prepare("SELECT DISTINCT process_name FROM activity_days ORDER BY process_name COLLATE NOCASE"),
   ]);
   return json({
     devices: devices.results as Array<{ id: string; name: string; manufacturer: string; model: string }>,
@@ -399,16 +477,8 @@ async function rebuildRollupEndpoint(request: Request, env: Env, url: URL): Prom
   if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
     throw new HttpError(400, "invalid_range", "from and to must be a valid ascending ISO date range");
   }
-  const DAY = 86_400_000;
-  // Rebuild one UTC day at a time so each statement stays small and the work is
-  // bounded. Each day is padded so neighbouring samples close intervals and
-  // spill across the day boundary is captured.
-  let rebuilt = 0;
-  for (let start = Math.floor(from / DAY) * DAY; start < to; start += DAY) {
-    await rebuildRollup(env.DB, start - DAY, start + 2 * DAY);
-    rebuilt += 1;
-  }
-  return json({ rebuiltDays: rebuilt });
+  const rebuiltDays = await rebuildRollupForRange(env.DB, from, to);
+  return json({ rebuiltDays });
 }
 
 async function api(request: Request, env: Env, url: URL): Promise<Response> {

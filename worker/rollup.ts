@@ -1,135 +1,88 @@
 import type { OverviewFilters, OverviewPoint } from "./types";
-import { buildWhere } from "./validation";
+import { decodeSamples, type StoredEvent } from "./storage";
 
 const HOUR_MS = 3_600_000;
-// A sample contributes at most five minutes, so a small lookahead past the
-// rebuilt window is enough to see the "next" sample that closes each interval.
+const DAY_MS = 86_400_000;
 const LOOKAHEAD_MS = 6 * HOUR_MS;
 
-/**
- * Shared CTE that turns raw `activity_events` into per-event "slices".
- *
- * A slice is the portion of one sample's contribution that falls inside a
- * single time bucket, capped at five minutes. A sample that crosses the bucket
- * end produces an extra spill slice in the following bucket with no CPUs. This
- * mirrors the runtime overview math exactly; only the bucket boundaries change
- * (hours here, days/months in `computeOverview`).
- */
-function sliceCte(
-  bucketExpr: { key: string; start: string; end: string; spillKey: string; spillEnd: string },
-  contextRange: { sql: string; values: unknown[] },
-  effectiveTo: number,
-): string {
-  return `
-    WITH ordered_all AS (
-      SELECT e.id, e.device_id, e.observed_at, e.process_name, e.window_title,
-             e.cpu_percent, e.battery_percent,
-             LEAD(e.observed_at) OVER (
-               PARTITION BY e.device_id ORDER BY e.observed_at, e.id
-             ) AS next_at,
-             LEAD(e.process_name) OVER (
-               PARTITION BY e.device_id ORDER BY e.observed_at, e.id
-             ) AS next_process,
-             LEAD(e.window_title) OVER (
-               PARTITION BY e.device_id ORDER BY e.observed_at, e.id
-             ) AS next_title
-        FROM activity_events e
-       WHERE ${contextRange.sql}
-    ),
-    bucketed AS (
-      SELECT ordered_all.*,
-             ${bucketExpr.key} AS bucket,
-             ${bucketExpr.start} AS bucket_start,
-             ${bucketExpr.end} AS bucket_end,
-             CASE
-               WHEN process_name IN ('LockScreen', 'Desktop') THEN observed_at
-               ELSE MIN(COALESCE(next_at, ${effectiveTo}), observed_at + 300000, ${effectiveTo})
-             END AS raw_end
-        FROM ordered_all
-    ),
-    slices AS (
-      SELECT bucket, bucket_start, bucket_end, device_id, process_name, window_title,
-             1 AS event_count,
-             CASE WHEN process_name IN ('LockScreen', 'Desktop') THEN 0
-                  ELSE MAX(0, MIN(raw_end, bucket_end) - MAX(observed_at, bucket_start)) END AS total_ms,
-             CASE WHEN next_at IS NOT NULL AND
-                       (next_process <> process_name OR next_title <> window_title)
-                  THEN 1 ELSE 0 END AS switch_count,
-             cpu_percent
-        FROM bucketed
-      UNION ALL
-      SELECT ${bucketExpr.spillKey} AS bucket,
-             bucket_end AS bucket_start,
-             ${bucketExpr.spillEnd} AS bucket_end,
-             device_id, process_name, window_title,
-             0 AS event_count,
-             MAX(0, raw_end - bucket_end) AS total_ms,
-             0 AS switch_count,
-             NULL AS cpu_percent
-        FROM bucketed
-       WHERE raw_end > bucket_end
-         AND process_name NOT IN ('LockScreen', 'Desktop')
-    )`;
-}
-
-/** SQL fragments for bucketing by UTC hour: `(x / 3600000) * 3600000`. */
-const hourBucket = {
-  key: "((observed_at / 3600000) * 3600000)",
-  start: "((observed_at / 3600000) * 3600000)",
-  end: "(((observed_at / 3600000) * 3600000) + 3600000)",
-  spillKey: "((bucket_end / 3600000) * 3600000)",
-  spillEnd: "(((bucket_end / 3600000) * 3600000) + 3600000)",
-};
-
-/**
- * Recompute the hourly rollup for every hour in [hourFrom, hourTo).
- *
- * The raw sample context is widened by one hour before and a few hours after so
- * that LEAD() sees the neighbouring samples needed to close intervals and to
- * receive spill from the previous hour. Only buckets inside the requested
- * window are written, so the operation is idempotent: the window is cleared and
- * re-inserted in one pass.
- */
-export async function rebuildRollup(
-  db: D1Database,
-  hourFrom: number,
-  hourTo: number,
-): Promise<void> {
-  if (hourTo <= hourFrom) return;
-  // Align the window to whole hours.
-  const from = Math.floor(hourFrom / HOUR_MS) * HOUR_MS;
-  const to = Math.ceil(hourTo / HOUR_MS) * HOUR_MS;
-  const contextFrom = from - HOUR_MS;
-  const contextTo = to + LOOKAHEAD_MS;
-  const effectiveTo = to + LOOKAHEAD_MS;
-
-  const cte = sliceCte(hourBucket, { sql: "e.observed_at >= ? AND e.observed_at < ?", values: [contextFrom, contextTo] }, effectiveTo);
-
-  const sql = `${cte}
-    INSERT INTO activity_rollup
-      (device_id, hour_bucket, process_name, window_title,
-       event_count, total_ms, switch_count, cpu_sum, cpu_count, cpu_max)
-    SELECT device_id, bucket AS hour_bucket, process_name, window_title,
-           SUM(event_count) AS event_count,
-           SUM(total_ms) AS total_ms,
-           SUM(switch_count) AS switch_count,
-           COALESCE(SUM(cpu_percent), 0) AS cpu_sum,
-           COUNT(cpu_percent) AS cpu_count,
-           MAX(cpu_percent) AS cpu_max
-      FROM slices
-     WHERE bucket >= ? AND bucket < ?
-     GROUP BY device_id, bucket, process_name, window_title`;
-
-  await db.batch([
-    db.prepare("DELETE FROM activity_rollup WHERE hour_bucket >= ? AND hour_bucket < ?").bind(from, to),
-    db.prepare(sql).bind(contextFrom, contextTo, from, to),
-  ]);
+interface Slice {
+  deviceId: string;
+  hour: number;
+  process: string;
+  title: string;
+  eventCount: number;
+  totalMs: number;
+  switches: number;
+  cpu: number | null;
 }
 
 /**
- * Rebuild rollup rows covering the UTC days that contain the given timestamps.
- * Each affected day is widened by one hour on both sides so that samples
- * straddling a day boundary keep accurate durations and spill.
+ * Turn a chronologically ordered list of events (per device) into per-hour
+ * slices, mirroring the runtime overview math: each sample contributes at most
+ * five minutes, capped by the next sample on the same device and the range end,
+ * and LockScreen/Desktop contribute no tracked time. A sample that crosses an
+ * hour boundary produces a spill slice in the following hour.
+ */
+function buildSlices(events: StoredEvent[], effectiveTo: number): Slice[] {
+  // Group by device, order by time then id, exactly like the SQL window.
+  const byDevice = new Map<string, StoredEvent[]>();
+  for (const event of events) {
+    const list = byDevice.get(event.deviceId);
+    if (list) list.push(event);
+    else byDevice.set(event.deviceId, [event]);
+  }
+
+  const slices: Slice[] = [];
+  for (const list of byDevice.values()) {
+    list.sort((a, b) => a.observedAt - b.observedAt || a.id.localeCompare(b.id));
+    for (let i = 0; i < list.length; i += 1) {
+      const event = list[i];
+      const next = list[i + 1];
+      const passive = event.processName === "LockScreen" || event.processName === "Desktop";
+      const nextAt = next ? next.observedAt : null;
+      const rawEnd = passive
+        ? event.observedAt
+        : Math.min(nextAt ?? effectiveTo, event.observedAt + 300_000, effectiveTo);
+
+      const bucketStart = Math.floor(event.observedAt / HOUR_MS) * HOUR_MS;
+      const bucketEnd = bucketStart + HOUR_MS;
+      const ownMs = passive ? 0 : Math.max(0, Math.min(rawEnd, bucketEnd) - Math.max(event.observedAt, bucketStart));
+      const switches = next && (next.processName !== event.processName || next.windowTitle !== event.windowTitle) ? 1 : 0;
+
+      slices.push({
+        deviceId: event.deviceId,
+        hour: bucketStart,
+        process: event.processName,
+        title: event.windowTitle,
+        eventCount: 1,
+        totalMs: ownMs,
+        switches,
+        cpu: event.cpuPercent,
+      });
+
+      if (!passive && rawEnd > bucketEnd) {
+        const spillHour = Math.floor(bucketEnd / HOUR_MS) * HOUR_MS;
+        slices.push({
+          deviceId: event.deviceId,
+          hour: spillHour,
+          process: event.processName,
+          title: event.windowTitle,
+          eventCount: 0,
+          totalMs: Math.max(0, rawEnd - bucketEnd),
+          switches: 0,
+          cpu: null,
+        });
+      }
+    }
+  }
+  return slices;
+}
+
+/**
+ * Rebuild the hourly rollup for the UTC days that contain the given timestamps,
+ * reading the collapsed day rows, expanding them, and rewriting the affected
+ * hour buckets. Rebuilding (rather than incremental math) keeps late or
+ * out-of-order samples correct while only touching the days a batch can span.
  */
 export async function rebuildRollupForTimestamps(db: D1Database, timestamps: number[]): Promise<void> {
   if (timestamps.length === 0) return;
@@ -139,16 +92,103 @@ export async function rebuildRollupForTimestamps(db: D1Database, timestamps: num
     if (ts < min) min = ts;
     if (ts > max) max = ts;
   }
-  const dayStart = Math.floor(min / 86_400_000) * 86_400_000;
-  const dayEnd = Math.floor(max / 86_400_000) * 86_400_000 + 86_400_000;
-  // Extend by one hour each way to cover spill across the neighbouring hour.
-  await rebuildRollup(db, dayStart - HOUR_MS, dayEnd + HOUR_MS);
+  const dayStart = Math.floor(min / DAY_MS) * DAY_MS;
+  const dayEnd = Math.floor(max / DAY_MS) * DAY_MS + DAY_MS;
+  const hourFrom = dayStart - HOUR_MS;
+  const hourTo = dayEnd + HOUR_MS;
+  const effectiveTo = hourTo + LOOKAHEAD_MS;
+
+  // Read day rows overlapping the affected range (with lookahead for the next
+  // sample that closes each interval).
+  const rows = await db
+    .prepare(
+      `SELECT device_id, process_name, samples FROM activity_days
+        WHERE day_utc >= ? AND day_utc <= ?`,
+    )
+    .bind(Math.floor(hourFrom / DAY_MS) * DAY_MS, Math.floor((hourTo + LOOKAHEAD_MS) / DAY_MS) * DAY_MS)
+    .all<{ device_id: string; process_name: string; samples: string }>();
+
+  const events: StoredEvent[] = [];
+  for (const row of rows.results ?? []) {
+    events.push(...decodeSamples(row.device_id, row.process_name, row.samples));
+  }
+
+  const slices = buildSlices(events, effectiveTo).filter(
+    (slice) => slice.hour >= hourFrom && slice.hour < hourTo,
+  );
+
+  // Aggregate slices into rollup rows.
+  interface Agg {
+    deviceId: string;
+    hour: number;
+    process: string;
+    title: string;
+    event_count: number;
+    total_ms: number;
+    switch_count: number;
+    cpu_sum: number;
+    cpu_count: number;
+    cpu_max: number | null;
+  }
+  const agg = new Map<string, Agg>();
+  for (const slice of slices) {
+    const key = `${slice.deviceId}\u0000${slice.hour}\u0000${slice.process}\u0000${slice.title}`;
+    let row = agg.get(key);
+    if (!row) {
+      row = {
+        deviceId: slice.deviceId, hour: slice.hour, process: slice.process, title: slice.title,
+        event_count: 0, total_ms: 0, switch_count: 0, cpu_sum: 0, cpu_count: 0, cpu_max: null,
+      };
+      agg.set(key, row);
+    }
+    row.event_count += slice.eventCount;
+    row.total_ms += slice.totalMs;
+    row.switch_count += slice.switches;
+    if (slice.cpu !== null) {
+      row.cpu_sum += slice.cpu;
+      row.cpu_count += 1;
+      row.cpu_max = row.cpu_max === null ? slice.cpu : Math.max(row.cpu_max, slice.cpu);
+    }
+  }
+
+  const statements: D1PreparedStatement[] = [
+    db.prepare("DELETE FROM activity_rollup WHERE hour_bucket >= ? AND hour_bucket < ?").bind(hourFrom, hourTo),
+  ];
+  for (const row of agg.values()) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO activity_rollup
+             (device_id, hour_bucket, process_name, window_title,
+              event_count, total_ms, switch_count, cpu_sum, cpu_count, cpu_max)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(row.deviceId, row.hour, row.process, row.title, row.event_count, row.total_ms, row.switch_count, row.cpu_sum, row.cpu_count, row.cpu_max),
+    );
+  }
+  await db.batch(statements);
+}
+
+/**
+ * Rebuild the hourly rollup for every UTC day in [from, to). Used by the admin
+ * backfill endpoint and safe to re-run: each affected hour bucket is cleared and
+ * rewritten.
+ */
+export async function rebuildRollupForRange(db: D1Database, from: number, to: number): Promise<number> {
+  const DAY = 86_400_000;
+  let rebuilt = 0;
+  for (let start = Math.floor(from / DAY) * DAY; start < to; start += DAY) {
+    // Overlap-safe: rebuilding this day's hours plus one hour either side.
+    await rebuildRollupForTimestamps(db, [start, start + DAY - 1]);
+    rebuilt += 1;
+  }
+  return rebuilt;
 }
 
 /**
  * Aggregate the hourly rollup into the calendar buckets the dashboard expects.
  * Assumes a whole-hour timezone offset so UTC hours tile cleanly into local
- * days; callers must fall back to the exact path for other offsets.
+ * days; callers fall back to the exact path for other offsets.
  */
 export async function computeOverviewFromRollup(
   db: D1Database,
@@ -160,18 +200,12 @@ export async function computeOverviewFromRollup(
     ? `strftime('%Y-%m-%d', ${shiftedHour}, 'unixepoch')`
     : `strftime('%Y-%m', ${shiftedHour}, 'unixepoch')`;
 
-  // Apply device / app / title filters against the rollup rows themselves.
   const clauses = ["hour_bucket >= ?", "hour_bucket < ?"];
   const values: unknown[] = [filters.from - offsetMs, filters.to - offsetMs];
   if (filters.deviceId) { clauses.push("device_id = ?"); values.push(filters.deviceId); }
   if (filters.app) { clauses.push("process_name = ?"); values.push(filters.app); }
   const whereSql = clauses.join(" AND ");
-
-  // Title search is applied only to rollup rows; it is exact for whole-hour
-  // buckets because titles are stored verbatim per hour.
-  const titleClause = filters.query
-    ? ` AND window_title LIKE ? ESCAPE '\\'`
-    : "";
+  const titleClause = filters.query ? ` AND window_title LIKE ? ESCAPE '\\'` : "";
   const titleValues = filters.query
     ? [`%${filters.query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`]
     : [];
@@ -200,50 +234,44 @@ export async function computeOverviewFromRollup(
      ORDER BY duration_ms DESC, process_name COLLATE NOCASE
      LIMIT 10`;
 
-  // Battery endpoints and the device count are tz-independent and cheap to read
-  // straight from the indexed raw events (LIMIT 1 each), so we do not store them
-  // in the rollup. They use only the device filter, matching the exact path.
-  const batteryClauses = ["e.observed_at >= ?", "e.observed_at < ?"];
-  const batteryValues: unknown[] = [filters.from, filters.to];
-  if (filters.deviceId) { batteryClauses.push("e.device_id = ?"); batteryValues.push(filters.deviceId); }
-  const batteryWhere = batteryClauses.join(" AND ");
-  const batterySql = `
-    SELECT
-      (SELECT COUNT(DISTINCT device_id) FROM activity_events e WHERE ${batteryWhere}) AS global_device_count,
-      (SELECT battery_percent FROM activity_events e
-        WHERE ${batteryWhere} AND battery_percent IS NOT NULL
-        ORDER BY observed_at, id LIMIT 1) AS global_first_battery,
-      (SELECT battery_percent FROM activity_events e
-        WHERE ${batteryWhere} AND battery_percent IS NOT NULL
-        ORDER BY observed_at DESC, id DESC LIMIT 1) AS global_last_battery`;
-
   interface SeriesRow {
-    key: string;
-    events: number;
-    total_ms: number;
-    switches: number;
-    device_count: number;
-    average_cpu: number | null;
-    maximum_cpu: number | null;
+    key: string; events: number; total_ms: number; switches: number;
+    device_count: number; average_cpu: number | null; maximum_cpu: number | null;
   }
   interface AppRow { process_name: string; duration_ms: number }
-  interface BatteryRow {
-    global_device_count: number | null;
-    global_first_battery: number | null;
-    global_last_battery: number | null;
-  }
 
   const bound = [...values, ...titleValues];
-  const batteryBound = [...batteryValues, ...batteryValues, ...batteryValues];
-  const [series, apps, battery] = await db.batch([
+  const [series, apps] = await db.batch([
     db.prepare(seriesSql).bind(...bound),
     db.prepare(appsSql).bind(...bound),
-    db.prepare(batterySql).bind(...batteryBound),
   ]);
 
   const seriesRows = (series.results ?? []) as SeriesRow[];
   const appRows = (apps.results ?? []) as AppRow[];
-  const batteryRow = ((battery.results ?? []) as BatteryRow[])[0];
+
+  // Battery endpoints and the device count are tz-independent; read them from
+  // the collapsed day rows for the requested range.
+  const dayRows = await db
+    .prepare(
+      `SELECT device_id, samples FROM activity_days WHERE day_utc >= ? AND day_utc <= ?`,
+    )
+    .bind(Math.floor(filters.from / DAY_MS) * DAY_MS, Math.floor((filters.to - 1) / DAY_MS) * DAY_MS)
+    .all<{ device_id: string; samples: string }>();
+  const batteryEvents: StoredEvent[] = [];
+  for (const row of dayRows.results ?? []) {
+    batteryEvents.push(...decodeSamples(row.device_id, "", row.samples));
+  }
+  const inRange = batteryEvents.filter(
+    (event) =>
+      event.observedAt >= filters.from &&
+      event.observedAt < filters.to &&
+      (!filters.deviceId || event.deviceId === filters.deviceId),
+  );
+  inRange.sort((a, b) => a.observedAt - b.observedAt || a.id.localeCompare(b.id));
+  const batteryList = inRange.filter((event) => event.batteryPercent !== null);
+  const globalDeviceCount = new Set(inRange.map((event) => event.deviceId)).size;
+  const globalFirstBattery = batteryList.length ? batteryList[0].batteryPercent : null;
+  const globalLastBattery = batteryList.length ? batteryList[batteryList.length - 1].batteryPercent : null;
 
   const populated: OverviewPoint[] = seriesRows.map((row) => ({
     key: row.key,
@@ -257,7 +285,6 @@ export async function computeOverviewFromRollup(
     batteryDelta: null,
   }));
 
-  // Build a stable calendar series including empty buckets.
   const localStart = new Date(filters.from + offsetMs);
   const localEnd = new Date(filters.to + offsetMs);
   const keys: string[] = [];
@@ -267,7 +294,7 @@ export async function computeOverviewFromRollup(
     while (cursor < endCursor) {
       const date = new Date(cursor);
       keys.push(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`);
-      cursor += 86_400_000;
+      cursor += DAY_MS;
     }
   } else {
     let year = localStart.getUTCFullYear();
@@ -282,22 +309,14 @@ export async function computeOverviewFromRollup(
   }
   const byKey = new Map(populated.map((point) => [point.key, point]));
   const points: OverviewPoint[] = keys.map((key) => {
-    const existing = byKey.get(key);
-    if (existing) {
-      const localBoundary = filters.granularity === "day"
-        ? Date.parse(`${key}T00:00:00Z`)
-        : Date.parse(`${key}-01T00:00:00Z`);
-      const nextBoundary = filters.granularity === "day"
-        ? localBoundary + 86_400_000
-        : (() => { const d = new Date(localBoundary); d.setUTCMonth(d.getUTCMonth() + 1); return d.getTime(); })();
-      return { ...existing, start: localBoundary - offsetMs, end: nextBoundary - offsetMs };
-    }
     const localBoundary = filters.granularity === "day"
       ? Date.parse(`${key}T00:00:00Z`)
       : Date.parse(`${key}-01T00:00:00Z`);
     const nextBoundary = filters.granularity === "day"
-      ? localBoundary + 86_400_000
+      ? localBoundary + DAY_MS
       : (() => { const d = new Date(localBoundary); d.setUTCMonth(d.getUTCMonth() + 1); return d.getTime(); })();
+    const existing = byKey.get(key);
+    if (existing) return { ...existing, start: localBoundary - offsetMs, end: nextBoundary - offsetMs };
     return {
       key, start: localBoundary - offsetMs, end: nextBoundary - offsetMs,
       events: 0, totalMs: 0, switches: 0, averageCpu: null, maximumCpu: null, batteryDelta: null,
@@ -305,17 +324,12 @@ export async function computeOverviewFromRollup(
   });
 
   const appsOut = appRows.map((row) => ({ processName: row.process_name, durationMs: Number(row.duration_ms ?? 0) }));
-
   const cpuCount = points.reduce((sum, point) => sum + point.events, 0);
   const weightedCpu = points.reduce((sum, point) => sum + (point.averageCpu === null ? 0 : point.averageCpu * point.events), 0);
   const maximumCpu = points.reduce<number | null>(
     (max, point) => point.maximumCpu === null ? max : max === null ? point.maximumCpu : Math.max(max, point.maximumCpu),
     null,
   );
-
-  const globalDeviceCount = Number(batteryRow?.global_device_count ?? 0);
-  const globalFirstBattery = batteryRow?.global_first_battery ?? null;
-  const globalLastBattery = batteryRow?.global_last_battery ?? null;
 
   return {
     granularity: filters.granularity,
