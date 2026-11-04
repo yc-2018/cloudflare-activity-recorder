@@ -28,8 +28,17 @@ $fromIso = "${FromDate}T00:00:00.000Z"
 $toIso = "${ToDate}T00:00:00.000Z"
 
 $base = $env:AR_BASE
-if (-not $base) { $base = Read-Host "Worker base URL (e.g. https://bg.245556.xyz)" }
+if (-not $base) { $base = "https://bg.245556.xyz" }
+
+# Password: env var, else the local .dev.vars file, else prompt.
 $password = $env:AR_PASSWORD
+if (-not $password) {
+  $devVars = Join-Path (Get-Location) ".dev.vars"
+  if (Test-Path -LiteralPath $devVars) {
+    $line = Get-Content -LiteralPath $devVars | Where-Object { $_ -match '^\s*DASHBOARD_PASSWORD\s*=' } | Select-Object -First 1
+    if ($line) { $password = ($line -split '=', 2)[1].Trim() }
+  }
+}
 if (-not $password) { $password = Read-Host "Dashboard password" }
 
 $loginBody = @{ password = $password } | ConvertTo-Json
