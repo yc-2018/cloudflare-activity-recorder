@@ -6,15 +6,17 @@ import type { ActivityRow, QueryFilters } from "./types";
  *
  *   [ observed_at, window_title, cpu, memory, battery, power_plugged, trigger ]
  *
- * `trigger` is encoded as "w" (window_change) or "h" (heartbeat). Battery and
- * power_plugged may be null.
+ * `window_title` is `null` when it is identical to the previous sample in the
+ * same row, so a repeated title is stored once instead of on every sample. The
+ * decoder carries the last non-null title forward.
  *
- * Rows written before migration 0005 also carry an 8th element (the
- * client-supplied UUID); the decoder accepts both shapes.
+ * `trigger` is encoded as "w" (window_change) or "h" (heartbeat). Battery and
+ * power_plugged may be null. Rows written before migration 0005 also carry an
+ * 8th element (the client UUID), which is ignored.
  */
 export type SampleTuple = [
   number,
-  string,
+  string | null,
   number,
   number,
   number | null,
@@ -59,15 +61,18 @@ export function decodeSamples(
   }
   if (!Array.isArray(tuples)) return [];
   const out: StoredEvent[] = [];
+  let lastTitle = "";
   for (const tuple of tuples) {
     if (!Array.isArray(tuple) || tuple.length < 7) continue;
     const observedAt = Number(tuple[0]);
+    // `null` means "same title as the previous sample".
+    if (tuple[1] !== null && tuple[1] !== undefined) lastTitle = String(tuple[1]);
     out.push({
       id: typeof tuple[7] === "string" ? tuple[7] : syntheticId(deviceId, observedAt, processName),
       deviceId,
       observedAt,
       processName,
-      windowTitle: String(tuple[1] ?? ""),
+      windowTitle: lastTitle,
       cpuPercent: Number(tuple[2]),
       memoryPercent: Number(tuple[3]),
       batteryPercent: tuple[4] === null ? null : Number(tuple[4]),
@@ -78,17 +83,26 @@ export function decodeSamples(
   return out;
 }
 
-/** Encode an event into the compact tuple form (no UUID; see migration 0005). */
-export function encodeSample(event: StoredEvent): SampleTuple {
-  return [
-    event.observedAt,
-    event.windowTitle,
-    event.cpuPercent,
-    event.memoryPercent,
-    event.batteryPercent,
-    event.powerPlugged === null ? null : event.powerPlugged ? 1 : 0,
-    event.trigger === "window_change" ? "w" : "h",
-  ];
+/**
+ * Encode events into the compact tuple form. A window title equal to the
+ * previous sample is stored as `null`, so long runs of the same title collapse
+ * to a single copy without needing a separate dictionary.
+ */
+export function encodeSamples(events: StoredEvent[]): SampleTuple[] {
+  let lastTitle: string | null = null;
+  return events.map((event) => {
+    const title = event.windowTitle === lastTitle ? null : event.windowTitle;
+    lastTitle = event.windowTitle;
+    return [
+      event.observedAt,
+      title,
+      event.cpuPercent,
+      event.memoryPercent,
+      event.batteryPercent,
+      event.powerPlugged === null ? null : event.powerPlugged ? 1 : 0,
+      event.trigger === "window_change" ? "w" : "h",
+    ];
+  });
 }
 
 /** UTC day bucket (ms at 00:00 UTC) for a timestamp. */

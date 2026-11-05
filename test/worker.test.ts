@@ -324,6 +324,30 @@ describe("Worker API", () => {
     expect(device).toEqual({ first_seen: Date.parse(event.observedAt), last_seen: Date.parse(later.observedAt) });
   });
 
+  it("stores a repeated window title once and decodes it back on every sample", async () => {
+    const device = {
+      id: "title-device", name: "Title PC", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    await ingest([
+      sample("title-1", "2026-05-02T00:00:00Z", { trigger: "heartbeat", device, activity: { processName: "code.exe", windowTitle: "公司电脑💻" } }),
+      sample("title-2", "2026-05-02T00:01:00Z", { trigger: "heartbeat", device, activity: { processName: "code.exe", windowTitle: "公司电脑💻" } }),
+      sample("title-3", "2026-05-02T00:02:00Z", { trigger: "heartbeat", device, activity: { processName: "code.exe", windowTitle: "另一个窗口" } }),
+    ]);
+    const row = await env.DB.prepare(
+      `SELECT samples FROM activity_days WHERE device_id = (SELECT id FROM devices WHERE legacy_id = 'title-device')`,
+    ).first<{ samples: string }>();
+    const tuples = JSON.parse(row!.samples) as Array<[number, string | null, ...unknown[]]>;
+    expect(tuples.map((tuple) => tuple[1])).toEqual(["公司电脑💻", null, "另一个窗口"]);
+
+    const cookie = await eventReadCookies();
+    const page = await SELF.fetch(
+      `${BASE}/api/v1/events?from=2026-05-02T00%3A00%3A00.000Z&to=2026-05-02T01%3A00%3A00.000Z&limit=50`,
+      { headers: { cookie } },
+    ).then((response) => response.json<{ items: Array<{ observedAt: number; windowTitle: string }> }>());
+    expect(page.items.map((item) => item.windowTitle)).toEqual(["另一个窗口", "公司电脑💻", "公司电脑💻"]);
+  });
+
   it("maps a hardware fingerprint to one short device id across reinstall", async () => {
     const fingerprint = "fp-test-machine-0001";
     const base = {

@@ -16,11 +16,10 @@ import { computeOverviewFromEvents } from "./overview";
 import { computeReport } from "./report";
 import {
   decodeSamples,
-  encodeSample,
+  encodeSamples,
   readEventsForRange,
   toActivityRow,
   utcDay,
-  type SampleTuple,
   type StoredEvent,
 } from "./storage";
 import type { ActivityEventPayload, ActivityRow, DevicePayload, Env } from "./types";
@@ -170,22 +169,23 @@ async function mergeSamples(db: D1Database, valid: ActivityEventPayload[]): Prom
     // so this recognises duplicates without storing a client UUID. Across the
     // full dataset this pair is unique per device.
     const seen = new Set<number>();
-    const merged: SampleTuple[] = [];
+    const merged: StoredEvent[] = [];
     // Preserve already-stored samples (they are authoritative for dedup) ...
-    for (const prior of decodeSamples(group.deviceId, group.process, existingByKey.get(key) ?? null)) {
-      if (seen.has(prior.observedAt)) continue;
-      seen.add(prior.observedAt);
-      merged.push(encodeSample(prior));
+    for (const event of decodeSamples(group.deviceId, group.process, existingByKey.get(key) ?? null)) {
+      if (seen.has(event.observedAt)) continue;
+      seen.add(event.observedAt);
+      merged.push(event);
     }
     // ... then append genuinely new samples from this batch.
     for (const event of group.incoming) {
       if (seen.has(event.observedAt)) continue;
       seen.add(event.observedAt);
-      merged.push(encodeSample(event));
+      merged.push(event);
       accepted += 1;
     }
     // Keep samples ordered by time so the decoder can replay a timeline.
-    merged.sort((a, b) => a[0] - b[0]);
+    merged.sort((a, b) => a.observedAt - b.observedAt);
+    const encoded = encodeSamples(merged);
     statements.push(
       db
         .prepare(
@@ -195,7 +195,13 @@ async function mergeSamples(db: D1Database, valid: ActivityEventPayload[]): Prom
              sample_count = excluded.sample_count,
              samples = excluded.samples`,
         )
-        .bind(group.deviceId, group.day, group.process, merged.length, JSON.stringify(merged)),
+        .bind(
+          group.deviceId,
+          group.day,
+          group.process,
+          merged.length,
+          JSON.stringify(encoded),
+        ),
     );
   }
 
@@ -551,6 +557,49 @@ async function filters(request: Request, env: Env): Promise<Response> {
   });
 }
 
+/**
+ * Re-encode stored rows so a window title identical to the previous sample is
+ * written as `null`. Existing rows already encode titles literally, so this is
+ * a one-off compaction that is safe to re-run. Processes a bounded batch and
+ * returns the next cursor.
+ */
+async function compactTitles(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  const denied = await requireDashboardAccess(request, env);
+  if (denied) return denied;
+  const after = Number(url.searchParams.get("after") ?? "0");
+  const requested = Number(url.searchParams.get("limit") ?? "200");
+  const limit = Number.isInteger(requested) ? Math.min(500, Math.max(1, requested)) : 200;
+
+  const rows = await env.DB.prepare(
+    `SELECT rowid, device_id, day_utc, process_name, samples FROM activity_days
+      WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+  )
+    .bind(Number.isFinite(after) ? after : 0, limit)
+    .all<{ rowid: number; device_id: string; day_utc: number; process_name: string; samples: string }>();
+
+  const results = rows.results ?? [];
+  const statements: D1PreparedStatement[] = [];
+  let lastRowId = Number.isFinite(after) ? after : 0;
+  for (const row of results) {
+    const events = decodeSamples(row.device_id, row.process_name, row.samples);
+    const encoded = encodeSamples(events);
+    statements.push(
+      env.DB.prepare(
+        "UPDATE activity_days SET samples = ?, sample_count = ? WHERE device_id = ? AND day_utc = ? AND process_name = ?",
+      ).bind(JSON.stringify(encoded), encoded.length, row.device_id, row.day_utc, row.process_name),
+    );
+    lastRowId = Number(row.rowid);
+  }
+  if (statements.length) await env.DB.batch(statements);
+
+  return json({
+    processed: statements.length,
+    nextAfter: lastRowId,
+    done: results.length < limit,
+  });
+}
+
 async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/auth/status") return authStatus(request, env);
   if (url.pathname === "/api/auth/login") return login(request, env);
@@ -563,6 +612,7 @@ async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/v1/report") return report(request, env, url);
   if (url.pathname === "/api/v1/overview") return overview(request, env, url);
   if (url.pathname === "/api/v1/filters") return filters(request, env);
+  if (url.pathname === "/api/v1/admin/compact-titles") return compactTitles(request, env, url);
   return json({ error: "not_found", message: "API route not found" }, 404);
 }
 
