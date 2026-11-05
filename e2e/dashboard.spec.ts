@@ -245,6 +245,18 @@ for (const viewport of [
     await expect(page.getByRole("heading", { name: "活动时间线" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "应用活动分布" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "采样明细" })).toBeVisible();
+    if (viewport.width <= 700) {
+      const previous = await page.getByRole("button", { name: "上一时段" }).boundingBox();
+      const next = await page.getByRole("button", { name: "下一时段" }).boundingBox();
+      const date = await page.getByLabel("日期").boundingBox();
+      const today = await page.locator(".date-controls .text-button").boundingBox();
+      expect(previous && next && date && today).toBeTruthy();
+      const centers = [previous!, next!, date!, today!].map((box) => box.y + box.height / 2);
+      expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(2);
+      expect(previous!.x + previous!.width).toBeLessThanOrEqual(date!.x + 1);
+      expect(date!.x + date!.width).toBeLessThanOrEqual(next!.x + 1);
+      expect(next!.x + next!.width).toBeLessThanOrEqual(today!.x + 1);
+    }
     await expect(page.locator(".device-metrics-card")).toHaveCount(3);
     await expect(page.getByRole("region", { name: "工作电脑 系统状态" })).toBeVisible();
     await expect(page.getByRole("region", { name: "随身笔记本 系统状态" })).toBeVisible();

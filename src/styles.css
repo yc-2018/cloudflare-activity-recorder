@@ -259,16 +259,14 @@ tbody tr:hover { background: #fafbfb; }
   .view-switcher { flex: 1; }
   .view-switcher label { flex: 1; justify-content: center; padding: 0 6px; }
   .filter-band { padding: 12px; }
-  .date-controls { display: grid; grid-template-columns: 38px minmax(0, 1fr) 38px; }
-  .date-controls label { min-width: 0; }
-  .date-controls label:first-of-type { grid-column: 2; grid-row: 1; }
-  .date-controls label:last-of-type { grid-column: 2; grid-row: 2; }
-  .date-controls .previous-period { grid-column: 1; grid-row: 1; align-self: end; }
-  .date-controls .next-period { grid-column: 3; grid-row: 1; align-self: end; }
+  .date-controls { display: grid; grid-template-columns: 38px minmax(0, 1fr) 38px auto; gap: 8px; }
+  .date-controls label { min-width: 0; grid-column: 2; grid-row: 1; }
+  .date-controls .previous-period { grid-column: 1; grid-row: 1; align-self: center; }
+  .date-controls .next-period { grid-column: 3; grid-row: 1; align-self: center; }
   .date-controls input { width: 100%; min-width: 0; padding: 0 6px; }
   .date-separator { display: none; }
-  .date-controls .text-button { grid-column: 1 / 2; grid-row: 3; justify-self: start; padding: 0; white-space: nowrap; }
-  .date-controls .range-limit { grid-column: 2 / 4; grid-row: 3; justify-self: end; padding-top: 11px; }
+  .date-controls .text-button { grid-column: 4; grid-row: 1; align-self: center; justify-self: start; padding: 0 2px; white-space: nowrap; }
+  .date-controls .range-limit { grid-column: 2 / 5; grid-row: 2; justify-self: end; padding-top: 0; }
   .filter-controls { display: grid; grid-template-columns: 1fr 1fr; }
   .filter-controls label, .filter-controls select { width: 100%; min-width: 0; }
   .search-control { grid-column: 1 / -1; }
