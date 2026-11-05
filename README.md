@@ -7,7 +7,8 @@
 - Windows 前台进程和窗口标题采集，不采集网址、截图、键盘内容或用户名。
 - CPU、内存、电量、充电状态、设备型号和系统信息。
 - SQLite 离线队列、幂等事件 ID、最多 100 条批量补传和指数退避。
-- D1 永久存储，多设备自动区分。
+- D1 存储：按「设备 × UTC 天 × 应用」聚合成一行，采样明细压缩在该行的 JSON 中，行数比逐条存储少约 37 倍。
+- 设备硬件指纹：重装系统后仍能认回同一台设备，设备 ID 为短数字。
 - 日视图、月视图和年视图；支持设备、应用和标题筛选，包含时间线、应用排行、系统折线及分页明细。
 - 写入令牌、仪表盘主密码和日视图采样明细密码相互独立；两个查看密码都可选。
 ![Activity Recorder dashboard overview](docs/images/dashboard-overview.webp)
@@ -91,8 +92,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - 将程序安装到 `%LOCALAPPDATA%\ActivityRecorder\app`。
 - 创建独立 Python 虚拟环境并安装 `psutil`。
-- 创建或更新 `%LOCALAPPDATA%\ActivityRecorder\config.json`，重复安装时保留设备 ID。
+- 创建或更新 `%LOCALAPPDATA%\ActivityRecorder\config.json`；重复安装时会保留原有的设备 ID、设备名、`poll_seconds` 和 `heartbeat_seconds`，只更新程序文件。
+- 清理旧的 `__pycache__`，确保升级后运行的是新代码。
 - 注册当前用户登录后启动的 `ActivityRecorder` 计划任务，并立即启动。
+- 客户端启动时计算硬件指纹并调用 `/api/v1/devices/register` 换取短设备 ID；之后每次上报也会带上指纹。
 
 查看状态和最近日志：
 
@@ -127,7 +130,7 @@ Stop-ScheduledTask -TaskName "ActivityRecorder"
 Start-ScheduledTask -TaskName "ActivityRecorder"
 ```
 
-也可以按 `Win + R`，运行 `taskschd.msc`，在“任务计划程序库”中找到 `ActivityRecorder`，依次右键选择“结束”和“运行”。建议将 `poll_seconds` 保持在 `0.5` 秒以上；重新执行 `install.ps1` 会将它恢复为默认的 `1` 秒。
+也可以按 `Win + R`，运行 `taskschd.msc`，在“任务计划程序库”中找到 `ActivityRecorder`，依次右键选择“结束”和“运行”。建议将 `poll_seconds` 保持在 `0.5` 秒以上；重新执行 `install.ps1` 会保留当前值，不会改回默认的 `1` 秒。
 
 临时暂停采集（默认 5 分钟）：
 
@@ -202,6 +205,7 @@ Worker 测试运行在 Cloudflare Workers 本地运行时并绑定隔离的 D1�
       "trigger": "window_change",
       "device": {
         "id": "persistent-device-uuid",
+        "fingerprint": "sha256-of-stable-hardware-ids",
         "name": "工作电脑",
         "manufacturer": "Example",
         "model": "Model A",
@@ -225,15 +229,51 @@ Worker 测试运行在 Cloudflare Workers 本地运行时并绑定隔离的 D1�
 
 数据库统一保存 UTC 毫秒时间戳，仪表盘按浏览器当前时区生成日期边界。相邻采样点用于推算活动时长，每段最多计入 5 分钟；连续相同窗口会合并。客户端没有空闲检测，因此用户离开电脑但窗口不变时，仍可能通过心跳计入该应用。
 
+### 数据存储模型
+
+每条采样不再单独占一行。`activity_days` 表的主键是 `(device_id, day_utc, process_name)`，也就是**一台设备、一个 UTC 天、一个应用只存一行**。当天该应用的所有采样放在该行的 `samples` JSON 数组里，每个采样是一个位置固定的数组：
+
+```text
+[observed_at, window_title, cpu, memory, battery, power_plugged, trigger]
+```
+
+- `observed_at`：采集时刻（UTC 毫秒）。
+- `window_title`：窗口标题；**若与上一条采样相同则存 `null`**，解码时沿用上一条，避免重复保存长标题。
+- `cpu` / `memory` / `battery`：百分比。
+- `power_plugged`：`1` 充电、`0` 未充电、`null` 未知。
+- `trigger`：`"w"` 表示窗口切换，`"h"` 表示心跳。
+
+同一行内的 `sample_count` 与 JSON 数组长度保持一致。`devices` 表保存设备信息：`id` 是短数字（`1`、`2`…），`legacy_id` 保存旧版 36 位 UUID（兼容尚未升级的客户端），`fingerprint` 保存硬件指纹。
+
+### 设备身份与重装系统
+
+客户端用主板 UUID、主板序列号、CPU ProcessorId 和硬盘序列号计算 SHA-256 指纹，启动时调用 `POST /api/v1/devices/register`：
+
+- 指纹已存在：直接返回原有短设备 ID。
+- 指纹不存在：分配下一个短设备 ID。
+
+因此**重装操作系统后，只要硬件不变，数据仍会记到同一台设备上**。指纹不可读时会退回 Windows `MachineGuid`（这种情形下重装系统会视为新设备）。
+
+旧版客户端未发送指纹时，服务端通过 `legacy_id`（原 UUID）映射到同一短 ID，读写完全兼容；只是在该客户端升级前，`fingerprint` 为空，重装系统会被当成新设备。
+
 ### 仪表盘视图
 
 - **日视图**：只选择一个日期，显示当天时间线、应用活动分布、系统状态和采样明细；采样明细可使用独立密码，图表下方的范围拉杆只改变当前图表的可视区间。
 - **月视图**：把整个月按天聚合，点击某一天可进入该日的日视图；范围拉杆可缩放显示的日期。
 - **年视图**：把整年按月聚合，点击某个月可进入该月的月视图；范围拉杆可缩放显示的月份。
 
-月视图和年视图使用 Worker 的聚合查询，不会把整年原始采样一次性传到浏览器。
+月视图和年视图由 Worker 直接从 `activity_days` 的日行解码聚合，不会把整年原始采样一次性传到浏览器，也不依赖额外的汇总表。
 
 详细报表单次最多查询连续 7 天，并最多读取 20,000 条采样。超过 20,000 条时页面会提示进一步缩小日期范围；原始数据不会因此丢失，明细 API 仍可分页查询。
+
+### 维护接口
+
+| 接口 | 鉴权 | 说明 |
+|---|---|---|
+| `POST /api/v1/devices/register` | `INGEST_TOKEN` | 用硬件指纹换短设备 ID |
+| `POST /api/v1/admin/compact-titles?after=<rowid>&limit=200` | 仪表盘登录 | 分批把历史行重新编码为「重复标题存 null」的格式；返回 `nextAfter` 和 `done`，可循环调用直到 `done=true` |
+
+`READ_CACHE=1`（`wrangler.jsonc` 的 `vars`）会给月/年视图的聚合结果加 5 分钟缓存，避免重复打开页面时重复读库。
 
 ## 常见问题
 
@@ -241,3 +281,6 @@ Worker 测试运行在 Cloudflare Workers 本地运行时并绑定隔离的 D1�
 - 队列持续增长：确认 Endpoint 使用 HTTPS、令牌与 `INGEST_TOKEN` 一致，并检查 Worker 日志。
 - 页面显示未配置：设置了 `DASHBOARD_PASSWORD` 或 `DETAILS_PASSWORD` 时必须设置 `SESSION_SECRET`。
 - 修改数据库结构：新增迁移文件后先运行本地迁移和测试，再执行 `npm run db:migrate:remote`。
+- 升级客户端：`git pull` 后在 `client` 目录重新运行 `install.ps1`。脚本会保留 `device_id`、`device_name`、`poll_seconds`、`heartbeat_seconds`，只替换程序文件并重启计划任务。
+- 重装系统后设备变成新设备：确认重装前已升级客户端并成功注册过指纹；若 `config.json` 丢失且指纹尚未绑定，可先把 `device_id` 手工写成原值再安装。原 UUID 可从 `devices.legacy_id` 查到。
+- 想进一步压缩历史数据：调用 `POST /api/v1/admin/compact-titles`（分批，`after`/`limit`），把历史行重新编码为重复标题存 `null` 的格式。
