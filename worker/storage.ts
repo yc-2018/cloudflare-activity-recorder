@@ -4,10 +4,13 @@ import type { ActivityRow, QueryFilters } from "./types";
  * Compact single-sample representation stored inside the per-day JSON blob.
  * Kept as a positional tuple (not an object) so the stored JSON is small.
  *
- *   [ observed_at, window_title, cpu, memory, battery, power_plugged, trigger, id ]
+ *   [ observed_at, window_title, cpu, memory, battery, power_plugged, trigger ]
  *
  * `trigger` is encoded as "w" (window_change) or "h" (heartbeat). Battery and
  * power_plugged may be null.
+ *
+ * Rows written before migration 0005 also carry an 8th element (the
+ * client-supplied UUID); the decoder accepts both shapes.
  */
 export type SampleTuple = [
   number,
@@ -16,7 +19,6 @@ export type SampleTuple = [
   number,
   number | null,
   number | null,
-  string,
   string,
 ];
 
@@ -33,6 +35,15 @@ export interface StoredEvent {
   trigger: "window_change" | "heartbeat";
 }
 
+/**
+ * Stable synthetic id for an event. Retried uploads keep the same observedAt and
+ * process, so this also serves as the idempotency key and as a pagination tie
+ * breaker.
+ */
+export function syntheticId(deviceId: string, observedAt: number, processName: string): string {
+  return `${deviceId}:${observedAt}:${processName}`;
+}
+
 /** Decode a stored JSON array of sample tuples into flat events for one key. */
 export function decodeSamples(
   deviceId: string,
@@ -40,20 +51,21 @@ export function decodeSamples(
   json: string | null,
 ): StoredEvent[] {
   if (!json) return [];
-  let tuples: SampleTuple[];
+  let tuples: unknown[][];
   try {
-    tuples = JSON.parse(json) as SampleTuple[];
+    tuples = JSON.parse(json) as unknown[][];
   } catch {
     return [];
   }
   if (!Array.isArray(tuples)) return [];
   const out: StoredEvent[] = [];
   for (const tuple of tuples) {
-    if (!Array.isArray(tuple) || tuple.length < 8) continue;
+    if (!Array.isArray(tuple) || tuple.length < 7) continue;
+    const observedAt = Number(tuple[0]);
     out.push({
-      id: String(tuple[7]),
+      id: typeof tuple[7] === "string" ? tuple[7] : syntheticId(deviceId, observedAt, processName),
       deviceId,
-      observedAt: Number(tuple[0]),
+      observedAt,
       processName,
       windowTitle: String(tuple[1] ?? ""),
       cpuPercent: Number(tuple[2]),
@@ -66,7 +78,7 @@ export function decodeSamples(
   return out;
 }
 
-/** Encode an event into the compact tuple form. */
+/** Encode an event into the compact tuple form (no UUID; see migration 0005). */
 export function encodeSample(event: StoredEvent): SampleTuple {
   return [
     event.observedAt,
@@ -76,7 +88,6 @@ export function encodeSample(event: StoredEvent): SampleTuple {
     event.batteryPercent,
     event.powerPlugged === null ? null : event.powerPlugged ? 1 : 0,
     event.trigger === "window_change" ? "w" : "h",
-    event.id,
   ];
 }
 

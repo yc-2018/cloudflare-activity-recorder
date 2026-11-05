@@ -92,23 +92,26 @@ async function mergeSamples(db: D1Database, valid: ActivityEventPayload[]): Prom
   const statements: D1PreparedStatement[] = [];
   let accepted = 0;
   for (const [key, group] of groups) {
-    const seen = new Set<string>();
+    // Idempotency key: a retried upload keeps the same observedAt and process,
+    // so this recognises duplicates without storing a client UUID. Across the
+    // full dataset this pair is unique per device.
+    const seen = new Set<number>();
     const merged: SampleTuple[] = [];
     // Preserve already-stored samples (they are authoritative for dedup) ...
     for (const prior of decodeSamples(group.deviceId, group.process, existingByKey.get(key) ?? null)) {
-      if (seen.has(prior.id)) continue;
-      seen.add(prior.id);
+      if (seen.has(prior.observedAt)) continue;
+      seen.add(prior.observedAt);
       merged.push(encodeSample(prior));
     }
     // ... then append genuinely new samples from this batch.
     for (const event of group.incoming) {
-      if (seen.has(event.id)) continue;
-      seen.add(event.id);
+      if (seen.has(event.observedAt)) continue;
+      seen.add(event.observedAt);
       merged.push(encodeSample(event));
       accepted += 1;
     }
     // Keep samples ordered by time so the decoder can replay a timeline.
-    merged.sort((a, b) => a[0] - b[0] || String(a[7]).localeCompare(String(b[7])));
+    merged.sort((a, b) => a[0] - b[0]);
     statements.push(
       db
         .prepare(

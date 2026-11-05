@@ -360,8 +360,12 @@ describe("Worker API", () => {
     expect(report.timeline).toHaveLength(1);
 
     const page = await SELF.fetch(`${BASE}/api/v1/events?${query}&limit=10`, { headers: { cookie } })
-      .then((response) => response.json<{ items: Array<{ id: string }>; nextCursor: string | null }>());
-    expect(page.items.map((item) => item.id)).toEqual(["cross-day-b"]);
+      .then((response) => response.json<{ items: Array<{ id: string; processName: string; windowTitle: string }>; nextCursor: string | null }>());
+    // Ids are synthetic now (no stored UUID), so assert on the event content.
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0].processName).toBe("chrome.exe");
+    expect(page.items[0].windowTitle).toBe("Cloudflare Dashboard");
+    expect(page.items[0].id).toBeTruthy();
     expect(page.nextCursor).toBeNull();
   });
 
