@@ -319,9 +319,39 @@ describe("Worker API", () => {
     const second = await ingest([event]).then((response) => response.json<Record<string, number>>());
     expect(first).toEqual({ accepted: 2, duplicates: 0, rejected: 0 });
     expect(second).toEqual({ accepted: 0, duplicates: 1, rejected: 0 });
-    const device = await env.DB.prepare("SELECT first_seen, last_seen FROM devices WHERE id = ?")
+    const device = await env.DB.prepare("SELECT first_seen, last_seen FROM devices WHERE legacy_id = ?")
       .bind("device-1").first<{ first_seen: number; last_seen: number }>();
     expect(device).toEqual({ first_seen: Date.parse(event.observedAt), last_seen: Date.parse(later.observedAt) });
+  });
+
+  it("maps a hardware fingerprint to one short device id across reinstall", async () => {
+    const fingerprint = "fp-test-machine-0001";
+    const base = {
+      name: "Fingerprint PC", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    // First install: legacy UUID id plus a fingerprint.
+    await ingest([sample("fp-a", "2026-05-01T00:00:00Z", {
+      trigger: "heartbeat",
+      device: { id: "legacy-uuid-1111", ...base, fingerprint },
+    })]);
+    const first = await env.DB.prepare("SELECT id FROM devices WHERE fingerprint = ?")
+      .bind(fingerprint).first<{ id: string }>();
+    expect(first?.id).toBeTruthy();
+    expect(/^\d+$/.test(first!.id)).toBe(true);
+
+    // Reinstall: a brand-new local UUID but the same hardware fingerprint must
+    // resolve to the same canonical device id.
+    const registered = await SELF.fetch(`${BASE}/api/v1/devices/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test-ingest-token-123456789" },
+      body: JSON.stringify({ device: { id: "brand-new-uuid-2222", ...base, fingerprint } }),
+    }).then((response) => response.json<{ deviceId: string }>());
+    expect(registered.deviceId).toBe(first!.id);
+
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM devices WHERE fingerprint = ?")
+      .bind(fingerprint).first<{ n: number }>();
+    expect(Number(count?.n ?? 0)).toBe(1);
   });
 
   it("uses an opaque cursor to paginate events", async () => {
@@ -399,7 +429,8 @@ describe("Worker API", () => {
     // (device, day, app): deviceA/day10(code), deviceA/day11(code+chrome),
     // deviceB/day11(code) => four combinations, four samples total.
     const collapsed = await env.DB.prepare(
-      "SELECT COUNT(*) AS n, SUM(sample_count) AS total FROM activity_days WHERE device_id IN ('day-a','day-b')",
+      `SELECT COUNT(*) AS n, SUM(sample_count) AS total FROM activity_days
+        WHERE device_id IN (SELECT id FROM devices WHERE legacy_id IN ('day-a','day-b'))`,
     ).first<{ n: number; total: number }>();
     expect(Number(collapsed?.total ?? 0)).toBe(4);
     expect(Number(collapsed?.n ?? 0)).toBe(4);

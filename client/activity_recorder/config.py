@@ -24,6 +24,7 @@ class Config:
     device_name: str | None = None
     poll_seconds: float = 1.0
     heartbeat_seconds: float = 300.0
+    fingerprint: str | None = None
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -52,4 +53,5 @@ def load_config(path: Path | None = None) -> Config:
         device_name=(str(raw.get("device_name", "")).strip() or None),
         poll_seconds=poll_seconds,
         heartbeat_seconds=heartbeat_seconds,
+        fingerprint=(str(raw.get("fingerprint", "")).strip() or None),
     )

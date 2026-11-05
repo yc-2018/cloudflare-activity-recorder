@@ -1,5 +1,5 @@
 import { HttpError } from "./http";
-import type { ActivityEventPayload, OverviewFilters, QueryFilters } from "./types";
+import type { ActivityEventPayload, DevicePayload, OverviewFilters, QueryFilters } from "./types";
 
 const MAX_REPORT_RANGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -26,6 +26,25 @@ function percentage(value: unknown, nullable = false): number | null | undefined
   return Math.round(value * 10) / 10;
 }
 
+/** Validate a device descriptor sent by the client (register or ingest). */
+export function validateDevice(value: unknown): DevicePayload | null {
+  const device = object(value);
+  if (!device) return null;
+  const id = text(device.id, 64) ?? "0";
+  const fingerprint = text(device.fingerprint, 128);
+  const name = text(device.name, 128);
+  const manufacturer = text(device.manufacturer, 128);
+  const model = text(device.model, 128);
+  const osVersion = text(device.osVersion, 256);
+  const cpuModel = text(device.cpuModel, 256);
+  if (!name || !manufacturer || !model || !osVersion || !cpuModel) return null;
+  return {
+    id,
+    ...(fingerprint ? { fingerprint } : {}),
+    name, manufacturer, model, osVersion, cpuModel,
+  };
+}
+
 export function validateEvent(value: unknown): ActivityEventPayload | null {
   const event = object(value);
   const device = object(event?.device);
@@ -38,6 +57,7 @@ export function validateEvent(value: unknown): ActivityEventPayload | null {
   const observedMs = observedAt ? Date.parse(observedAt) : Number.NaN;
   const trigger = event.trigger;
   const deviceId = text(device.id, 64);
+  const fingerprint = text(device.fingerprint, 128);
   const name = text(device.name, 128);
   const manufacturer = text(device.manufacturer, 128);
   const model = text(device.model, 128);
@@ -65,7 +85,11 @@ export function validateEvent(value: unknown): ActivityEventPayload | null {
     id,
     observedAt: new Date(observedMs).toISOString(),
     trigger,
-    device: { id: deviceId, name, manufacturer, model, osVersion, cpuModel },
+    device: {
+      id: deviceId,
+      ...(fingerprint ? { fingerprint } : {}),
+      name, manufacturer, model, osVersion, cpuModel,
+    },
     activity: { processName, windowTitle },
     metrics: { cpuPercent, memoryPercent, batteryPercent, powerPlugged },
   };

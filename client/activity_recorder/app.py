@@ -5,6 +5,7 @@ import signal
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -15,8 +16,8 @@ import psutil
 from .config import Config, data_directory, load_config
 from .pause import PauseState
 from .queue import EventQueue
-from .system import ForegroundWindow, device_details, foreground_window, system_metrics
-from .uploader import Uploader
+from .system import ForegroundWindow, device_details, device_fingerprint, foreground_window, system_metrics
+from .uploader import Uploader, register_device
 
 
 class SamplingPolicy:
@@ -69,7 +70,7 @@ def run_recorder(
     wake_event: threading.Event,
     window_reader: Callable[[], ForegroundWindow] = foreground_window,
 ) -> None:
-    device = device_details(config.device_id, config.device_name)
+    device = device_details(config.device_id, config.device_name, config.fingerprint)
     policy = SamplingPolicy(config.heartbeat_seconds)
     pause_state = PauseState(data_directory() / "pause_until.txt")
     was_paused = False
@@ -109,6 +110,24 @@ def main() -> None:
     except Exception:
         logging.exception("Recorder cannot start")
         raise
+
+    # Resolve the stable device identity: the server maps the hardware
+    # fingerprint to a short numeric id, so an OS reinstall keeps the same
+    # device (and the id stays compact in storage).
+    fingerprint = config.fingerprint or device_fingerprint()
+    device_id = config.device_id
+    try:
+        registered = register_device(
+            config.endpoint,
+            config.ingest_token,
+            device_details(device_id, config.device_name, fingerprint),
+        )
+        if registered:
+            device_id = registered
+            logging.info("Device registered as %s (fingerprint %s)", device_id, fingerprint[:12])
+    except Exception:
+        logging.warning("Device registration failed; using configured id", exc_info=True)
+    config = replace(config, device_id=device_id, fingerprint=fingerprint)
 
     stop_event = threading.Event()
     wake_event = threading.Event()

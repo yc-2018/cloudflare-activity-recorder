@@ -11,6 +11,8 @@ export interface Env {
 
 export interface DevicePayload {
   id: string;
+  /** Stable hardware fingerprint; when present the server maps it to a short id. */
+  fingerprint?: string;
   name: string;
   manufacturer: string;
   model: string;

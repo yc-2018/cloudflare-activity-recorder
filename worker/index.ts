@@ -23,8 +23,8 @@ import {
   type SampleTuple,
   type StoredEvent,
 } from "./storage";
-import type { ActivityEventPayload, ActivityRow, Env } from "./types";
-import { parseFilters, parseOverviewFilters, validateEvent } from "./validation";
+import type { ActivityEventPayload, ActivityRow, DevicePayload, Env } from "./types";
+import { parseFilters, parseOverviewFilters, validateDevice, validateEvent } from "./validation";
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -33,10 +33,84 @@ function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * Resolve a client device descriptor to the canonical short device id stored in
+ * `devices`. Lookup order: explicit short id, legacy (pre-migration) UUID, then
+ * the stable hardware fingerprint. Unknown devices get the next number.
+ */
+async function resolveDevice(
+  db: D1Database,
+  device: DevicePayload,
+  firstSeen: number,
+  lastSeen: number,
+): Promise<string> {
+  const fingerprint = device.fingerprint ?? null;
+  const row = await db
+    .prepare(
+      `SELECT id, fingerprint FROM devices
+        WHERE id = ? OR legacy_id = ? OR (? IS NOT NULL AND fingerprint = ?)
+        LIMIT 1`,
+    )
+    .bind(device.id, device.id, fingerprint, fingerprint)
+    .first<{ id: string; fingerprint: string | null }>();
+
+  if (row) {
+    // Bind the fingerprint the first time a known device reports one.
+    if (fingerprint && !row.fingerprint) {
+      await db.prepare("UPDATE devices SET fingerprint = ? WHERE id = ?").bind(fingerprint, row.id).run();
+    }
+    return row.id;
+  }
+
+  const max = await db
+    .prepare("SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) AS max FROM devices WHERE id GLOB '[0-9]*' AND LENGTH(id) <= 9")
+    .first<{ max: number }>();
+  const newId = String(Number(max?.max ?? 0) + 1);
+  await db
+    .prepare(
+      `INSERT INTO devices
+         (id, legacy_id, fingerprint, created_at, name, manufacturer, model, os_version, cpu_model, first_seen, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      newId,
+      /^\d+$/.test(device.id) ? null : device.id,
+      fingerprint,
+      firstSeen,
+      device.name,
+      device.manufacturer,
+      device.model,
+      device.osVersion,
+      device.cpuModel,
+      firstSeen,
+      lastSeen,
+    )
+    .run();
+  return newId;
+}
+
+async function resolveDeviceIds(db: D1Database, events: ActivityEventPayload[]): Promise<Map<string, string>> {
+  const firstSeen = new Map<string, number>();
+  const lastSeen = new Map<string, number>();
+  const deviceById = new Map<string, DevicePayload>();
+  for (const event of events) {
+    const at = Date.parse(event.observedAt);
+    const id = event.device.id;
+    if (!deviceById.has(id)) deviceById.set(id, event.device);
+    firstSeen.set(id, Math.min(firstSeen.get(id) ?? at, at));
+    lastSeen.set(id, Math.max(lastSeen.get(id) ?? at, at));
+  }
+  const resolved = new Map<string, string>();
+  for (const [clientId, device] of deviceById) {
+    resolved.set(clientId, await resolveDevice(db, device, firstSeen.get(clientId)!, lastSeen.get(clientId)!));
+  }
+  return resolved;
+}
+
+/**
  * Merge validated events into the collapsed activity_days table. Events are
  * grouped by (device, UTC day, application) so each affected key costs one read
  * plus one upsert instead of one write per sample. Existing samples with the
- * same id are treated as duplicates and skipped.
+ * same observedAt are treated as duplicates and skipped.
  *
  * Returns the number of newly accepted samples (duplicates excluded).
  */
@@ -152,6 +226,13 @@ async function ingest(request: Request, env: Env): Promise<Response> {
     return json({ accepted: 0, duplicates: 0, rejected: body.events.length });
   }
 
+  // Map every client device id (UUID or fingerprint) onto its canonical short id
+  // before grouping, so older clients and reinstallations converge on one row.
+  const canonical = await resolveDeviceIds(env.DB, valid);
+  for (const event of valid) {
+    event.device.id = canonical.get(event.device.id) ?? event.device.id;
+  }
+
   const devices = new Map<string, { event: ActivityEventPayload; firstSeen: number; lastSeen: number }>();
   for (const event of valid) {
     const observedAt = Date.parse(event.observedAt);
@@ -206,6 +287,22 @@ async function ingest(request: Request, env: Env): Promise<Response> {
     duplicates: valid.length - accepted,
     rejected: body.events.length - valid.length,
   });
+}
+
+async function registerDevice(request: Request, env: Env): Promise<Response> {
+  if (!env.INGEST_TOKEN) {
+    return json({ error: "server_misconfigured", message: "INGEST_TOKEN is not configured" }, 503);
+  }
+  if (!(await hasIngestAccess(request, env))) {
+    return json({ error: "unauthorized", message: "Invalid ingest token" }, 401);
+  }
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  const body = asObject(await readJson(request, 10_000));
+  const device = validateDevice(body?.device ?? body);
+  if (!device) throw new HttpError(400, "invalid_device", "device descriptor is invalid");
+  const now = Date.now();
+  const deviceId = await resolveDevice(env.DB, device, now, now);
+  return json({ deviceId });
 }
 
 async function authStatus(request: Request, env: Env): Promise<Response> {
@@ -461,6 +558,7 @@ async function api(request: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/api/auth/details/login") return detailsLogin(request, env);
   if (url.pathname === "/api/auth/details/logout") return detailsLogout(request);
   if (url.pathname === "/api/v1/events" && request.method === "POST") return ingest(request, env);
+  if (url.pathname === "/api/v1/devices/register") return registerDevice(request, env);
   if (url.pathname === "/api/v1/events") return events(request, env, url);
   if (url.pathname === "/api/v1/report") return report(request, env, url);
   if (url.pathname === "/api/v1/overview") return overview(request, env, url);

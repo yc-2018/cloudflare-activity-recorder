@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import platform
 import socket
+import subprocess
 import sys
 import winreg
 from dataclasses import dataclass
@@ -12,6 +14,64 @@ import psutil
 
 
 UNKNOWN = "unknown"
+
+# Values that BIOS vendors use as placeholders; they must not become part of a
+# fingerprint because every machine would then hash to the same value.
+_PLACEHOLDER_SERIALS = {
+    "",
+    "none",
+    "unknown",
+    "default string",
+    "to be filled by o.e.m.",
+    "0",
+    "00000000",
+}
+
+
+def _cim_values() -> list[str]:
+    """Read stable hardware identifiers from the Windows CIM store.
+
+    One PowerShell process returns all four values, which keeps startup cheap.
+    These identifiers come from SMBIOS/firmware and survive an OS reinstall,
+    unlike the Windows MachineGuid.
+    """
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$cs=(Get-CimInstance Win32_ComputerSystemProduct|Select-Object -First 1).UUID;"
+        "$bb=(Get-CimInstance Win32_BaseBoard|Select-Object -First 1).SerialNumber;"
+        "$cpu=(Get-CimInstance Win32_Processor|Select-Object -First 1).ProcessorId;"
+        "$disk=(Get-CimInstance Win32_DiskDrive|Select-Object -First 1).SerialNumber;"
+        "Write-Output ($cs+'|'+$bb+'|'+$cpu+'|'+$disk)"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        line = (result.stdout or "").strip().splitlines()
+        if line:
+            return [part.strip() for part in line[-1].split("|")]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return []
+
+
+def device_fingerprint() -> str:
+    """Stable hardware fingerprint, hashed to a short opaque token.
+
+    Uses motherboard UUID, board serial, CPU id and disk serial. If none are
+    readable, falls back to the Windows MachineGuid (which does change on an OS
+    reinstall, but still keeps a stable identity within one installation).
+    """
+    parts = _cim_values()
+    cleaned = [part for part in parts if part.lower() not in _PLACEHOLDER_SERIALS]
+    if not cleaned:
+        cleaned = [_registry_value(r"SOFTWARE\Microsoft\Cryptography", "MachineGuid")]
+    material = "|".join(cleaned).encode("utf-8", errors="replace")
+    return hashlib.sha256(material).hexdigest()[:32]
 
 
 @dataclass(frozen=True)
@@ -62,8 +122,12 @@ def _registry_value(path: str, name: str) -> str:
         return UNKNOWN
 
 
-def device_details(device_id: str, device_name: str | None = None) -> dict[str, str]:
-    return {
+def device_details(
+    device_id: str,
+    device_name: str | None = None,
+    fingerprint: str | None = None,
+) -> dict[str, str]:
+    details = {
         "id": device_id,
         "name": device_name or socket.gethostname() or UNKNOWN,
         "manufacturer": _registry_value(r"HARDWARE\DESCRIPTION\System\BIOS", "SystemManufacturer"),
@@ -71,6 +135,9 @@ def device_details(device_id: str, device_name: str | None = None) -> dict[str, 
         "osVersion": platform.platform(terse=False) or UNKNOWN,
         "cpuModel": _registry_value(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString"),
     }
+    if fingerprint:
+        details["fingerprint"] = fingerprint
+    return details
 
 
 def foreground_window() -> ForegroundWindow:

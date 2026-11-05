@@ -42,6 +42,32 @@ def post_events(endpoint: str, token: str, events: list[dict[str, Any]]) -> dict
         raise RuntimeError("Server response is missing acknowledgement counts") from error
 
 
+def register_device(endpoint: str, token: str, device: dict[str, Any]) -> str | None:
+    """Ask the server which short device id this hardware fingerprint maps to.
+
+    Returns None when the server is unreachable or rejects the request, in which
+    case the recorder keeps using the id from its local config.
+    """
+    request = urllib.request.Request(
+        f"{endpoint}/api/v1/devices/register",
+        data=json.dumps({"device": device}, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "authorization": f"Bearer {token}",
+            "content-type": "application/json; charset=utf-8",
+            "user-agent": "ActivityRecorder/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+        return None
+    if isinstance(payload, dict) and isinstance(payload.get("deviceId"), str):
+        return payload["deviceId"]
+    return None
+
+
 class Uploader:
     def __init__(
         self,
