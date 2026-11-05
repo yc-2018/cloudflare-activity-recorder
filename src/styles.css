@@ -130,6 +130,7 @@ select { min-width: 150px; max-width: 220px; }
 .overview-bar:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .overview-bar-track { display: flex; width: min(28px, 80%); height: calc(100% - 23px); align-items: end; justify-content: center; }
 .overview-bar-fill { display: block; width: 100%; min-height: 3px; border-radius: 4px 4px 0 0; background: linear-gradient(180deg, #4c9a8e, #26736a); transition: filter .15s, height .15s; }
+.overview-bar-fill.is-zero { min-height: 0; }
 .overview-bar:hover .overview-bar-fill, .overview-bar:focus-visible .overview-bar-fill { filter: brightness(1.12); }
 .overview-bar-label { overflow: hidden; width: 100%; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .overview-table-wrap { overflow-x: auto; padding: 0 18px 16px; }

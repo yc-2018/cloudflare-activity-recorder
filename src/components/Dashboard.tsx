@@ -3,8 +3,10 @@ import {
   Activity,
   BatteryCharging,
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Cpu,
   LockKeyhole,
   LogOut,
@@ -158,6 +160,7 @@ export function Dashboard({
   const [metricTo, setMetricTo] = useState(0);
   const [overviewFrom, setOverviewFrom] = useState(0);
   const [overviewTo, setOverviewTo] = useState(0);
+  const [overviewTableOpen, setOverviewTableOpen] = useState(false);
   const today = localDateString();
   const currentMonth = today.slice(0, 7);
   const currentYear = today.slice(0, 4);
@@ -282,6 +285,10 @@ export function Dashboard({
     setOverviewTo(Math.max(0, Math.min(overviewPoints.length - 1, currentIndex ?? overviewPoints.length - 1)));
   }, [month, overviewPoints, view, year]);
 
+  useEffect(() => {
+    setOverviewTableOpen(false);
+  }, [view]);
+
   function shift(direction: number) {
     if (view === "day") setDay((current) => {
       const next = addDays(current, direction);
@@ -305,14 +312,10 @@ export function Dashboard({
   }
 
   function changeView(next: ViewMode) {
-    if (next === "day") {
-      if (view === "month") setDay(`${month}-01`);
-      else if (view === "year") setDay(`${year}-01-01`);
-    } else if (next === "month") {
-      setMonth(view === "year" ? `${year}-01` : day.slice(0, 7));
-    } else {
-      setYear(view === "month" ? month.slice(0, 4) : day.slice(0, 4));
-    }
+    if (next === view) return;
+    if (next === "day") setDay(today);
+    else if (next === "month") setMonth(currentMonth);
+    else setYear(currentYear);
     setView(next);
   }
 
@@ -392,9 +395,9 @@ export function Dashboard({
         <section className="filter-band" aria-label="筛选条件">
           <div className="date-controls">
             <button className="icon-button previous-period" onClick={() => shift(-1)} title="上一时段" aria-label="上一时段"><ChevronLeft size={18} /></button>
-            {view === "day" && <label><span>日期</span><input type="date" max={today} value={day} onChange={(event) => { if (validDate(event.target.value) && event.target.value <= today) setDay(event.target.value); }} /></label>}
-            {view === "month" && <label><span>月份</span><input type="month" max={currentMonth} value={month} onChange={(event) => { if (validMonth(event.target.value) && event.target.value <= currentMonth) setMonth(event.target.value); }} /></label>}
-            {view === "year" && <label><span>年份</span><input className="year-input" type="number" min="2000" max={currentYear} value={year} onChange={(event) => { if (validYear(event.target.value) && event.target.value <= currentYear) setYear(event.target.value); }} /></label>}
+            {view === "day" && <label><input aria-label="日期" type="date" max={today} value={day} onChange={(event) => { if (validDate(event.target.value) && event.target.value <= today) setDay(event.target.value); }} /></label>}
+            {view === "month" && <label><input aria-label="月份" type="month" max={currentMonth} value={month} onChange={(event) => { if (validMonth(event.target.value) && event.target.value <= currentMonth) setMonth(event.target.value); }} /></label>}
+            {view === "year" && <label><input aria-label="年份" className="year-input" type="number" min="2000" max={currentYear} value={year} onChange={(event) => { if (validYear(event.target.value) && event.target.value <= currentYear) setYear(event.target.value); }} /></label>}
             <button className="icon-button next-period" onClick={() => shift(1)} title="下一时段" aria-label="下一时段" disabled={isCurrentPeriod}><ChevronRight size={18} /></button>
             <button className="text-button" onClick={setCurrentPeriod}>{view === "day" ? "今天" : view === "month" ? "本月" : "今年"}</button>
           </div>
@@ -473,7 +476,21 @@ export function Dashboard({
             ) : overview ? (
               <>
                 <section className="panel full-panel overview-panel">
-                  <div className="panel-heading"><div><h2>{view === "month" ? "按天活动统计" : "按月活动统计"}</h2><p>点击某个{view === "month" ? "日期" : "月份"}可进入下一层视图</p></div></div>
+                  <div className="panel-heading">
+                    <div><h2>{view === "month" ? "按天活动统计" : "按月活动统计"}</h2><p>点击某个{view === "month" ? "日期" : "月份"}可进入下一层视图</p></div>
+                    {overviewHasData && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setOverviewTableOpen((open) => !open)}
+                        aria-expanded={overviewTableOpen}
+                        aria-controls="overview-table"
+                      >
+                        {overviewTableOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                        {overviewTableOpen ? "收起列表" : "展开列表"}
+                      </button>
+                    )}
+                  </div>
                   {overviewHasData ? <OverviewChart
                       points={overviewPoints}
                       fromIndex={overviewFrom}
@@ -491,7 +508,7 @@ export function Dashboard({
                     endLabel={`${view === "month" ? "日期" : "月份"}显示结束`}
                     formatValue={(index) => overviewPoints[index] ? pointDate(overviewPoints[index], view === "month" ? "day" : "month") : "--"}
                   />}
-                  {overviewHasData ? <div className="overview-table-wrap"><table className="overview-table"><thead><tr><th>{view === "month" ? "日期" : "月份"}</th><th>记录时长</th><th>事件</th><th>切换</th><th>平均 CPU</th></tr></thead><tbody>
+                  {overviewTableOpen && overviewHasData ? <div className="overview-table-wrap" id="overview-table"><table className="overview-table"><thead><tr><th>{view === "month" ? "日期" : "月份"}</th><th>记录时长</th><th>事件</th><th>切换</th><th>平均 CPU</th></tr></thead><tbody>
                       {overviewPoints.slice(overviewFrom, overviewTo + 1).map((point) => <tr key={point.key} onClick={() => selectOverviewPoint(point)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter") selectOverviewPoint(point); }}>
                         <td>{point.key}</td><td>{formatDuration(point.totalMs)}</td><td>{point.events}</td><td>{point.switches}</td><td>{metric(point.averageCpu)}</td>
                       </tr>)}

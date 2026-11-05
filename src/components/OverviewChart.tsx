@@ -27,8 +27,6 @@ export function OverviewChart({ points, fromIndex, toIndex, granularity, onSelec
 
   const visible = points.slice(fromIndex, toIndex + 1);
   const maximum = Math.max(...visible.map((point) => point.totalMs), 0);
-  const eventMaximum = Math.max(...visible.map((point) => point.events), 0);
-  const scaleMaximum = maximum || eventMaximum || 1;
 
   function move(event: PointerEvent<HTMLButtonElement>, point: OverviewPoint) {
     setHover({ point, x: event.clientX, y: event.clientY });
@@ -38,9 +36,7 @@ export function OverviewChart({ points, fromIndex, toIndex, granularity, onSelec
     <div className="overview-chart" onPointerLeave={() => setHover(null)}>
       <div className="overview-bars" role="list" aria-label={granularity === "day" ? "按天统计" : "按月统计"}>
         {visible.map((point) => {
-          const height = maximum
-            ? Math.max(3, (point.totalMs / scaleMaximum) * 100)
-            : Math.max(3, (point.events / scaleMaximum) * 100);
+          const height = maximum > 0 && point.totalMs > 0 ? Math.max(3, (point.totalMs / maximum) * 100) : 0;
           return (
             <button
               type="button"
@@ -53,7 +49,7 @@ export function OverviewChart({ points, fromIndex, toIndex, granularity, onSelec
               onBlur={() => setHover(null)}
               onClick={() => onSelect(point)}
             >
-              <span className="overview-bar-track"><span className="overview-bar-fill" style={{ height: `${height}%` }} /></span>
+              <span className="overview-bar-track"><span className={height > 0 ? "overview-bar-fill" : "overview-bar-fill is-zero"} style={{ height: `${height}%` }} /></span>
               <span className="overview-bar-label">{labelFor(point, granularity)}</span>
             </button>
           );

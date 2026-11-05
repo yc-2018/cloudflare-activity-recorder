@@ -517,10 +517,10 @@ async function events(request: Request, env: Env, url: URL): Promise<Response> {
   const devices = await env.DB.prepare("SELECT id, name FROM devices").all<{ id: string; name: string }>();
   const names = new Map((devices.results ?? []).map((row) => [row.id, row.name]));
 
-  // Newest first, matching the previous DESC ordering, id as tie-breaker.
-  stored.sort((a, b) => b.observedAt - a.observedAt || b.id.localeCompare(a.id));
+  // Chronological order so the day view reads top-to-bottom like a timeline.
+  stored.sort((a, b) => a.observedAt - b.observedAt || a.id.localeCompare(b.id));
   const filtered = cursor
-    ? stored.filter((event) => event.observedAt < cursor.at || (event.observedAt === cursor.at && event.id < cursor.id))
+    ? stored.filter((event) => event.observedAt > cursor.at || (event.observedAt === cursor.at && event.id > cursor.id))
     : stored;
   const page = filtered.slice(0, limit);
   const hasMore = filtered.length > limit;

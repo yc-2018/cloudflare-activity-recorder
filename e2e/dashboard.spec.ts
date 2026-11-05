@@ -206,6 +206,33 @@ test("prevents future periods and defaults current overview ranges to now", asyn
   await expect(page.getByRole("slider", { name: "月份显示结束" })).toHaveValue(String(base.getMonth()));
 });
 
+test("opening a view tab resets to the current period and keeps the table collapsed", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await mockOverviewApi(page);
+  await page.goto("/?view=year&year=2024");
+  await expect(page.getByRole("heading", { name: "2024 年活动概览" })).toBeVisible();
+  await expect(page.getByLabel("年份")).toHaveValue("2024");
+  await expect(page.locator(".date-controls").getByText("年份", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("radio", { name: "月视图" }).check();
+  await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();
+  await expect(page.getByLabel("月份")).toHaveValue(currentMonthValue);
+  await expect(page.locator(".date-controls").getByText("月份", { exact: true })).toHaveCount(0);
+  await expect(page.locator("#overview-table")).toHaveCount(0);
+  await page.getByRole("button", { name: "展开列表" }).click();
+  await expect(page.locator("#overview-table table")).toBeVisible();
+  await page.getByRole("button", { name: "收起列表" }).click();
+  await expect(page.locator("#overview-table")).toHaveCount(0);
+
+  await page.getByRole("radio", { name: "年视图" }).check();
+  await expect(page.getByLabel("年份")).toHaveValue(currentYearValue);
+
+  await page.getByRole("radio", { name: "日视图" }).check();
+  await expect(page.getByRole("heading", { name: "今天干了什么" })).toBeVisible();
+  await expect(page.getByLabel("日期")).toHaveValue(todayValue);
+  await expect(page.locator(".date-controls").getByText("日期", { exact: true })).toHaveCount(0);
+});
+
 for (const viewport of [
   { name: "desktop", width: 1440, height: 1000 },
   { name: "mobile", width: 390, height: 844 },

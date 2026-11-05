@@ -345,7 +345,7 @@ describe("Worker API", () => {
       `${BASE}/api/v1/events?from=2026-05-02T00%3A00%3A00.000Z&to=2026-05-02T01%3A00%3A00.000Z&limit=50`,
       { headers: { cookie } },
     ).then((response) => response.json<{ items: Array<{ observedAt: number; windowTitle: string }> }>());
-    expect(page.items.map((item) => item.windowTitle)).toEqual(["另一个窗口", "公司电脑💻", "公司电脑💻"]);
+    expect(page.items.map((item) => item.windowTitle)).toEqual(["公司电脑💻", "公司电脑💻", "另一个窗口"]);
   });
 
   it("maps a hardware fingerprint to one short device id across reinstall", async () => {

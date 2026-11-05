@@ -14,6 +14,10 @@ describe("OverviewChart", () => {
     const { container } = render(<OverviewChart points={points} fromIndex={0} toIndex={1} granularity="day" onSelect={select} />);
     const bars = container.querySelectorAll<HTMLButtonElement>(".overview-bar");
     expect(bars).toHaveLength(2);
+    const fills = container.querySelectorAll<HTMLElement>(".overview-bar-fill");
+    expect(fills[0]).not.toHaveClass("is-zero");
+    expect(fills[1]).toHaveClass("is-zero");
+    expect(fills[1].style.height).toBe("0%");
     fireEvent.pointerMove(bars[0], { clientX: 120, clientY: 80 });
     expect(screen.getByRole("tooltip")).toHaveTextContent("2026-07-01");
     expect(screen.getByRole("tooltip")).toHaveTextContent("10 分钟");
