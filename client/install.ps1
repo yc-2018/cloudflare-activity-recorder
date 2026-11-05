@@ -22,6 +22,11 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "activity_recorder") -Destinatio
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "run.py") -Destination $appDir -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "requirements.txt") -Destination $appDir -Force
 
+# Drop stale bytecode so an upgrade always runs the copied sources.
+$packageDir = Join-Path $appDir "activity_recorder"
+Get-ChildItem -LiteralPath $packageDir -Filter "__pycache__" -Recurse -Directory -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
 $venvDir = Join-Path $appDir ".venv"
 $python = Join-Path $venvDir "Scripts\python.exe"
 $pythonw = Join-Path $venvDir "Scripts\pythonw.exe"
@@ -76,23 +81,38 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to install Python dependencies."
 }
 
-$deviceId = [guid]::NewGuid().ToString()
+# Preserve identity and sampling settings from an existing installation so that
+# re-running the installer to upgrade the client never changes behaviour.
+$existing = $null
 if (Test-Path -LiteralPath $configPath) {
     try {
         $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-        if ($existing.device_id) { $deviceId = [string]$existing.device_id }
     } catch {
-        Write-Warning "Existing config could not be read; a new device ID will be used."
+        Write-Warning "Existing config could not be read; defaults will be used."
     }
 }
+
+$deviceId = [guid]::NewGuid().ToString()
+if ($existing -and $existing.device_id) { $deviceId = [string]$existing.device_id }
+
+$resolvedDeviceName = $DeviceName
+if (-not $resolvedDeviceName -and $existing -and $existing.device_name) {
+    $resolvedDeviceName = [string]$existing.device_name
+}
+
+$pollSeconds = 1
+if ($existing -and $existing.poll_seconds) { $pollSeconds = [double]$existing.poll_seconds }
+
+$heartbeatSeconds = 300
+if ($existing -and $existing.heartbeat_seconds) { $heartbeatSeconds = [double]$existing.heartbeat_seconds }
 
 $configuration = [ordered]@{
     endpoint = $Endpoint.TrimEnd('/')
     ingest_token = $Token
     device_id = $deviceId
-    device_name = $DeviceName
-    poll_seconds = 1
-    heartbeat_seconds = 300
+    device_name = $resolvedDeviceName
+    poll_seconds = $pollSeconds
+    heartbeat_seconds = $heartbeatSeconds
 }
 $configJson = $configuration | ConvertTo-Json
 $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
