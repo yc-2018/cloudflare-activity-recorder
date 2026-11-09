@@ -18,11 +18,14 @@ export interface FilterOptions {
   apps: string[];
 }
 
+export interface ActivitySummary {
+  totalMs: number;
+  switches: number;
+  events: number;
+}
+
 export interface Report {
-  summary: {
-    totalMs: number;
-    switches: number;
-    events: number;
+  summary: ActivitySummary & {
     averageCpu: number | null;
     maximumCpu: number | null;
     batteryDelta: number | null;
@@ -76,9 +79,6 @@ export interface OverviewPoint {
   events: number;
   totalMs: number;
   switches: number;
-  averageCpu: number | null;
-  maximumCpu: number | null;
-  batteryDelta: number | null;
 }
 
 export interface Overview {
@@ -88,5 +88,5 @@ export interface Overview {
   hasData?: boolean;
   points: OverviewPoint[];
   apps: Report["apps"];
-  summary: Report["summary"];
+  summary: ActivitySummary;
 }

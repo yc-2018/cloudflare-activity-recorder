@@ -77,6 +77,7 @@ select { min-width: 150px; max-width: 220px; }
 .search-control button { height: 28px; margin-right: 4px; padding: 0 10px; border: 0; border-left: 1px solid var(--border); color: var(--green); background: #fff; font-weight: 700; }
 
 .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.summary-grid-compact { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .summary-card { min-width: 0; gap: 12px; padding: 15px; background: #fff; border: 1px solid var(--border); border-radius: 7px; }
 .summary-card > div { min-width: 0; }
 .summary-card small { display: block; color: var(--muted); margin-bottom: 5px; white-space: nowrap; }

@@ -29,7 +29,7 @@ import {
   localYearRange,
   monthDays,
 } from "../lib/date";
-import type { EventPage, FilterOptions, Overview, OverviewPoint, Report, ViewMode } from "../types";
+import type { ActivitySummary, EventPage, FilterOptions, Overview, OverviewPoint, Report, ViewMode } from "../types";
 import { AppDurationChart, DeviceMetricsCharts } from "./Charts";
 import { AppActivityTimeline } from "./AppActivityTimeline";
 import { DetailsLogin } from "./DetailsLogin";
@@ -116,17 +116,21 @@ function emptyPoint(key: string, granularity: "day" | "month"): OverviewPoint {
   const end = granularity === "day"
     ? Date.parse(new Date(`${addDays(key, 1)}T00:00:00`).toISOString())
     : Date.parse(localMonthRange(key).toIso);
-  return { key, start, end, events: 0, totalMs: 0, switches: 0, averageCpu: null, maximumCpu: null, batteryDelta: null };
+  return { key, start, end, events: 0, totalMs: 0, switches: 0 };
 }
 
-function summaryCards(summary: Report["summary"]) {
+function summaryCards(summary: ActivitySummary, system?: Report["summary"]) {
   return (
-    <section className="summary-grid" aria-label="活动摘要">
+    <section className={`summary-grid${system ? "" : " summary-grid-compact"}`} aria-label="活动摘要">
       <article className="summary-card"><span className="summary-icon green"><Timer size={18} /></span><div><small>记录时长</small><strong>{formatDuration(summary.totalMs)}</strong></div></article>
       <article className="summary-card"><span className="summary-icon red"><Zap size={18} /></span><div><small>窗口切换</small><strong>{summary.switches}</strong></div></article>
       <article className="summary-card"><span className="summary-icon blue"><CalendarDays size={18} /></span><div><small>采样事件</small><strong>{summary.events}</strong></div></article>
-      <article className="summary-card"><span className="summary-icon gold"><Cpu size={18} /></span><div><small>平均 / 最高 CPU</small><strong>{metric(summary.averageCpu)} <em>/ {metric(summary.maximumCpu)}</em></strong></div></article>
-      <article className="summary-card"><span className="summary-icon violet"><BatteryCharging size={18} /></span><div><small>电量变化</small><strong>{summary.batteryDelta === null ? "--" : `${summary.batteryDelta > 0 ? "+" : ""}${summary.batteryDelta}%`}</strong></div></article>
+      {system && (
+        <>
+          <article className="summary-card"><span className="summary-icon gold"><Cpu size={18} /></span><div><small>平均 / 最高 CPU</small><strong>{metric(system.averageCpu)} <em>/ {metric(system.maximumCpu)}</em></strong></div></article>
+          <article className="summary-card"><span className="summary-icon violet"><BatteryCharging size={18} /></span><div><small>电量变化</small><strong>{system.batteryDelta === null ? "--" : `${system.batteryDelta > 0 ? "+" : ""}${system.batteryDelta}%`}</strong></div></article>
+        </>
+      )}
     </section>
   );
 }
@@ -423,7 +427,7 @@ export function Dashboard({
         {!loading && summary && (
           <>
             {view === "day" && report?.truncated && <div className="notice-banner">此范围超过 20,000 条采样，图表仅显示最早的 20,000 条；请缩小日期范围。</div>}
-            {summaryCards(summary)}
+            {summaryCards(summary, view === "day" ? report?.summary : undefined)}
 
             {view === "day" && report ? (
               <>
@@ -508,16 +512,16 @@ export function Dashboard({
                     endLabel={`${view === "month" ? "日期" : "月份"}显示结束`}
                     formatValue={(index) => overviewPoints[index] ? pointDate(overviewPoints[index], view === "month" ? "day" : "month") : "--"}
                   />}
-                  {overviewTableOpen && overviewHasData ? <div className="overview-table-wrap" id="overview-table"><table className="overview-table"><thead><tr><th>{view === "month" ? "日期" : "月份"}</th><th>记录时长</th><th>事件</th><th>切换</th><th>平均 CPU</th></tr></thead><tbody>
+                  {overviewTableOpen && overviewHasData ? <div className="overview-table-wrap" id="overview-table"><table className="overview-table"><thead><tr><th>{view === "month" ? "日期" : "月份"}</th><th>记录时长</th><th>事件</th><th>切换</th></tr></thead><tbody>
                       {overviewPoints.slice(overviewFrom, overviewTo + 1).map((point) => <tr key={point.key} onClick={() => selectOverviewPoint(point)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter") selectOverviewPoint(point); }}>
-                        <td>{point.key}</td><td>{formatDuration(point.totalMs)}</td><td>{point.events}</td><td>{point.switches}</td><td>{metric(point.averageCpu)}</td>
+                        <td>{point.key}</td><td>{formatDuration(point.totalMs)}</td><td>{point.events}</td><td>{point.switches}</td>
                       </tr>)}
                     </tbody></table></div> : null}
                 </section>
 
                 <section className="panel full-panel">
-                  <div className="panel-heading"><div><h2>用时前十应用排行</h2><p>按当前{view === "month" ? "月份" : "年份"}的推算使用时长排序，点击应用可筛选</p></div></div>
-                  <div className="chart-body app-chart"><AppDurationChart apps={overview.apps ?? []} onSelectApp={setApp} /></div>
+                  <div className="panel-heading"><div><h2>{view === "year" ? "用时前 50 应用排行" : "用时前十应用排行"}</h2><p>按当前{view === "month" ? "月份" : "年份"}的推算使用时长排序，点击应用可筛选</p></div></div>
+                  <div className="chart-body app-chart" style={{ height: `${Math.max(330, (overview.apps?.length ?? 0) * 22 + 40)}px` }}><AppDurationChart apps={overview.apps ?? []} onSelectApp={setApp} /></div>
                 </section>
               </>
             ) : null}

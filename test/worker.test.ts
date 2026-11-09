@@ -265,7 +265,37 @@ describe("Worker API", () => {
     expect(body.apps.map((item) => item.processName)).not.toContain("process-09.exe");
   });
 
-  it("aggregates multiple devices and reports battery delta across the range", async () => {
+  it("returns up to fifty applications for the year view", async () => {
+    const device = {
+      id: "overview-year-ranking-device", name: "Year Ranking PC", manufacturer: "Example", model: "Model A",
+      osVersion: "Windows 11", cpuModel: "Example CPU",
+    };
+    const samples = Array.from({ length: 51 }, (_, index) => sample(
+      `overview-year-ranking-${String(index).padStart(2, "0")}`,
+      new Date(Date.parse("2026-09-01T00:00:00Z") + index * 60_000).toISOString(),
+      {
+        device,
+        activity: {
+          processName: `year-process-${String(index).padStart(2, "0")}.exe`,
+          windowTitle: `Application ${index}`,
+        },
+      },
+    ));
+    for (let index = 0; index < samples.length; index += 10) {
+      await ingest(samples.slice(index, index + 10));
+    }
+    const response = await SELF.fetch(
+      `${BASE}/api/v1/overview?granularity=month&from=2026-09-01T00%3A00%3A00.000Z&to=2026-10-01T00%3A00%3A00.000Z&tzOffset=0`,
+      { headers: { cookie: await login() } },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ points: Array<{ key: string }>; apps: Array<{ processName: string; durationMs: number }> }>();
+    expect(body.points.map((point) => point.key)).toEqual(["2026-09"]);
+    expect(body.apps).toHaveLength(50);
+    expect(body.apps[0]).toEqual({ processName: "year-process-50.exe", durationMs: 300_000 });
+  });
+
+  it("aggregates multiple devices into overview buckets", async () => {
     const deviceA = {
       id: "overview-multi-a", name: "A", manufacturer: "Example", model: "Model A",
       osVersion: "Windows 11", cpuModel: "Example CPU",
@@ -285,19 +315,18 @@ describe("Worker API", () => {
     );
     expect(response.status).toBe(200);
     const body = await response.json<{
-      points: Array<{ key: string; events: number; averageCpu: number | null; maximumCpu: number | null; batteryDelta: number | null }>;
-      summary: { events: number; averageCpu: number | null; maximumCpu: number | null; batteryDelta: number | null };
+      points: Array<Record<string, unknown> & { key: string; events: number; totalMs: number }>;
+      summary: Record<string, unknown> & { events: number };
     }>();
     const day = body.points.find((point) => point.key === "2026-05-01")!;
     expect(day.events).toBe(3);
-    // CPU averages and maxima are aggregated in SQL over all three samples.
-    expect(day.maximumCpu).toBe(50);
-    expect(day.averageCpu).toBe(30);
-    // Two devices share the day, so the per-day battery delta is suppressed.
-    expect(day.batteryDelta).toBeNull();
-    // The range summary also spans two devices, so no battery delta is reported.
+    expect(day.totalMs).toBe(660_000);
     expect(body.summary.events).toBe(3);
-    expect(body.summary.batteryDelta).toBeNull();
+    expect(day).not.toHaveProperty("averageCpu");
+    expect(day).not.toHaveProperty("maximumCpu");
+    expect(day).not.toHaveProperty("batteryDelta");
+    expect(body.summary).not.toHaveProperty("averageCpu");
+    expect(body.summary).not.toHaveProperty("batteryDelta");
   });
 
   it("returns an empty but complete series when a range has no records", async () => {

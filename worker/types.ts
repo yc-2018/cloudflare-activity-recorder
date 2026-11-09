@@ -71,7 +71,10 @@ export interface OverviewPoint {
   events: number;
   totalMs: number;
   switches: number;
-  averageCpu: number | null;
-  maximumCpu: number | null;
-  batteryDelta: number | null;
+}
+
+export interface OverviewSummary {
+  totalMs: number;
+  switches: number;
+  events: number;
 }

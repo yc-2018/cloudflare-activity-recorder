@@ -4,8 +4,8 @@ import type { OverviewPoint } from "../types";
 import { OverviewChart } from "./OverviewChart";
 
 const points: OverviewPoint[] = [
-  { key: "2026-07-01", start: 0, end: 86_400_000, events: 2, totalMs: 600_000, switches: 1, averageCpu: 20, maximumCpu: 40, batteryDelta: -1 },
-  { key: "2026-07-02", start: 86_400_000, end: 172_800_000, events: 0, totalMs: 0, switches: 0, averageCpu: null, maximumCpu: null, batteryDelta: null },
+  { key: "2026-07-01", start: 0, end: 86_400_000, events: 2, totalMs: 600_000, switches: 1 },
+  { key: "2026-07-02", start: 86_400_000, end: 172_800_000, events: 0, totalMs: 0, switches: 0 },
 ];
 
 describe("OverviewChart", () => {

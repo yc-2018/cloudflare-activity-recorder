@@ -63,7 +63,7 @@ const overview = {
   points: Array.from({ length: 31 }, (_, index) => {
     const date = new Date(base.getTime() + index * 86_400_000);
     const key = date.toISOString().slice(0, 10);
-    return { key, start: at(index * 1_440), end: at((index + 1) * 1_440), events: index ? 2 : 4, totalMs: index ? 600_000 : 1_200_000, switches: index % 2, averageCpu: 20 + index % 10, maximumCpu: 60, batteryDelta: -index % 3 };
+    return { key, start: at(index * 1_440), end: at((index + 1) * 1_440), events: index ? 2 : 4, totalMs: index ? 600_000 : 1_200_000, switches: index % 2 };
   }),
 };
 
@@ -86,7 +86,7 @@ async function mockOverviewApi(page: Page) {
         key: `2026-${String(index + 1).padStart(2, "0")}`,
         start: Date.parse(`2026-${String(index + 1).padStart(2, "0")}-01T00:00:00Z`),
         end: Date.parse(`2026-${String(index + 1).padStart(2, "0")}-15T00:00:00Z`),
-        events: index + 1, totalMs: (index + 1) * 600_000, switches: index, averageCpu: 20 + index, maximumCpu: 70, batteryDelta: null,
+        events: index + 1, totalMs: (index + 1) * 600_000, switches: index,
       })),
     } });
   });
@@ -176,7 +176,7 @@ test("switches between day, month and year views and drills down", async ({ page
 
   await page.getByRole("radio", { name: "年视图" }).check();
   await expect(page.getByRole("heading", { name: "按月活动统计" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "用时前十应用排行" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "用时前 50 应用排行" })).toBeVisible();
   await expect(page.getByRole("slider", { name: "月份显示开始" })).toBeVisible();
   await page.locator(".overview-bar").first().click();
   await expect(page.getByRole("heading", { name: "按天活动统计" })).toBeVisible();

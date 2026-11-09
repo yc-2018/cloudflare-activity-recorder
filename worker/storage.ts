@@ -183,6 +183,41 @@ export async function readEventsForRange(
   });
 }
 
+export interface OverviewDayRow {
+  device_id: string;
+  day_utc: number;
+  process_name: string;
+  samples: string | null;
+}
+
+/**
+ * Read the collapsed day rows needed by the overview, ordered so the caller can
+ * stream one device/day at a time instead of materialising every sample.
+ */
+export async function readOverviewDayRows(
+  db: D1Database,
+  filters: QueryFilters,
+): Promise<OverviewDayRow[]> {
+  const dayFrom = utcDay(filters.from);
+  const dayTo = utcDay(filters.to - 1);
+  const clauses = ["a.day_utc >= ?", "a.day_utc <= ?"];
+  const values: unknown[] = [dayFrom, dayTo];
+  if (filters.deviceId) {
+    clauses.push("a.device_id = ?");
+    values.push(filters.deviceId);
+  }
+  const rows = await db
+    .prepare(
+      `SELECT a.device_id, a.day_utc, a.process_name, a.samples
+         FROM activity_days a
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY a.device_id, a.day_utc, a.process_name`,
+    )
+    .bind(...values)
+    .all<OverviewDayRow>();
+  return rows.results ?? [];
+}
+
 export interface DeviceNameRow {
   id: string;
   name: string;

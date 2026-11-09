@@ -62,7 +62,6 @@ export function OverviewChart({ points, fromIndex, toIndex, granularity, onSelec
             <div><dt>时长</dt><dd>{formatDuration(hover.point.totalMs)}</dd></div>
             <div><dt>事件</dt><dd>{hover.point.events}</dd></div>
             <div><dt>切换</dt><dd>{hover.point.switches}</dd></div>
-            <div><dt>CPU</dt><dd>{hover.point.averageCpu === null ? "--" : `${hover.point.averageCpu}%`}</dd></div>
           </dl>
           <span className="overview-tooltip-hint">点击查看{granularity === "day" ? "当天" : "当月"}</span>
         </FloatingTooltip>

@@ -12,12 +12,13 @@ import {
   secretEquals,
 } from "./auth";
 import { HttpError, json, methodNotAllowed, readJson, securityHeaders } from "./http";
-import { computeOverviewFromEvents } from "./overview";
+import { computeOverviewFromDayRows } from "./overview";
 import { computeReport } from "./report";
 import {
   decodeSamples,
   encodeSamples,
   readEventsForRange,
+  readOverviewDayRows,
   toActivityRow,
   utcDay,
   type StoredEvent,
@@ -470,12 +471,11 @@ async function overview(request: Request, env: Env, url: URL): Promise<Response>
   if (denied) return denied;
   return withReadCache(request, env, async () => {
     const filters = parseOverviewFilters(url);
-    // Month/year overviews are computed directly from the collapsed day rows.
     // Read the full device range (no app/title filter) so each sample's duration
     // is measured against its true neighbouring sample; the app/title filters
     // are applied inside the computation, matching the original semantics.
-    const events = await readEventsForRange(env.DB, filters, { applyActivityFilters: false });
-    return json(computeOverviewFromEvents(events, filters));
+    const rows = await readOverviewDayRows(env.DB, filters);
+    return json(computeOverviewFromDayRows(rows, filters));
   });
 }
 
